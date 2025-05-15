@@ -1,21 +1,18 @@
-# Use Python 3.10 slim base image
+
 FROM python:3.10-slim
 
-# Set working directory
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
-# Copy requirements and install dependencies
+# Copy and install requirements
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy project files
 COPY . .
 
-# Expose port (Render requires this to be 10000 for free tier)
-EXPOSE 10000
-
-# Set environment variable for port
-ENV PORT=10000
-
-# Run Uvicorn server
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "10000"]
+# Command to run the application
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "${PORT:-10000}"]
