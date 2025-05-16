@@ -1,7 +1,7 @@
-    from web3 import Web3
-    from web3.types import TxParams
+from web3 import Web3
+from web3.types import TxParams
 
-    async def whitelist_user(w3: Web3, signer, faucet_address: str, user_address: str) -> str:
+async def whitelist_user(w3: Web3, signer, faucet_address: str, user_address: str) -> str:
         contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
         tx = contract.functions.setWhitelist(user_address, True).build_transaction({
             "from": signer.address,
@@ -14,7 +14,7 @@
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
         return tx_hash.hex()
 
-    async def claim_tokens(w3: Web3, signer, faucet_address: str, user_address: str) -> str:
+async def claim_tokens(w3: Web3, signer, faucet_address: str, user_address: str) -> str:
         contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
         tx = contract.functions.claimForBatch([user_address]).build_transaction({
             "from": signer.address,
@@ -28,7 +28,7 @@
         return tx_hash.hex()
 
     # Faucet ABI (same as in main.py)
-    FAUCET_ABI = [
+FAUCET_ABI = [
         {
             "inputs": [],
             "stateMutability": "nonpayable",
