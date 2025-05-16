@@ -35,37 +35,45 @@ async def health_check():
 
 @app.post("/claim")
 async def claim(request: ClaimRequest):
-    if not w3.is_address(request.userAddress) or not w3.is_address(request.faucetAddress):
-        raise HTTPException(status_code=400, detail="Invalid userAddress or faucetAddress")
-
     try:
+        # Validate and convert addresses to checksum format
+        if not w3.is_address(request.userAddress) or not w3.is_address(request.faucetAddress):
+            raise HTTPException(status_code=400, detail="Invalid userAddress or faucetAddress")
+        
+        # Convert to checksum addresses
+        user_address = w3.to_checksum_address(request.userAddress)
+        faucet_address = w3.to_checksum_address(request.faucetAddress)
+
         # Whitelist user if requested
         if request.shouldWhitelist:
             try:
                 whitelist_tx = await whitelist_user(
-                    w3, signer, request.faucetAddress, request.userAddress
+                    w3, signer, faucet_address, user_address
                 )
-                print(f"Whitelisted user {request.userAddress}, tx: {whitelist_tx}")
+                print(f"Whitelisted user {user_address}, tx: {whitelist_tx}")
             except Exception as e:
-                print(f"Failed to whitelist user {request.userAddress}: {str(e)}")
+                print(f"Failed to whitelist user {user_address}: {str(e)}")
                 raise HTTPException(status_code=500, detail=f"Failed to whitelist user: {str(e)}")
 
         # Check if user is whitelisted
-        faucet_contract = w3.eth.contract(address=request.faucetAddress, abi=FAUCET_ABI)
-        # Remove the 'await' keyword here as this is a synchronous call
-        is_whitelisted = faucet_contract.functions.isWhitelisted(request.userAddress).call()
+        faucet_contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
+        is_whitelisted = faucet_contract.functions.isWhitelisted(user_address).call()
         if not is_whitelisted:
-            print(f"User {request.userAddress} is not whitelisted for faucet {request.faucetAddress}")
+            print(f"User {user_address} is not whitelisted for faucet {faucet_address}")
             raise HTTPException(status_code=403, detail="User is not whitelisted")
 
         # Claim tokens
         try:
-            tx_hash = await claim_tokens(w3, signer, request.faucetAddress, request.userAddress)
-            print(f"Claimed tokens for {request.userAddress}, tx: {tx_hash}")
+            tx_hash = await claim_tokens(w3, signer, faucet_address, user_address)
+            print(f"Claimed tokens for {user_address}, tx: {tx_hash}")
             return {"success": True, "txHash": tx_hash}
         except Exception as e:
-            print(f"Failed to claim tokens for {request.userAddress}: {str(e)}")
+            print(f"Failed to claim tokens for {user_address}: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Failed to claim tokens: {str(e)}")
+    except ValueError as e:
+        # Handle invalid address format errors
+        print(f"Invalid address format: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Invalid address format: {str(e)}")
     except Exception as e:
         print(f"Server error for user {request.userAddress}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
