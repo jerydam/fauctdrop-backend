@@ -1,16 +1,14 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import traceback
-import sys
-from src.config import PRIVATE_KEY, RPC_URL
 from web3 import Web3
 from web3.types import TxReceipt
+from web3.exceptions import ContractLogicError
 from eth_account.signers.local import LocalAccount
 import asyncio
 import os
 from datetime import datetime
+from src.config import PRIVATE_KEY, get_rpc_url
 
 app = FastAPI(title="Faucet Backend API")
 
@@ -23,26 +21,38 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 
-# Initialize Web3
-w3 = Web3(Web3.HTTPProvider(RPC_URL))
-if not w3.is_connected():
-    raise Exception("Failed to connect to Ethereum node")
-
-# Load signer
+# Validate environment variables
 if not PRIVATE_KEY:
     raise Exception("PRIVATE_KEY not set in environment variables")
-signer = w3.eth.account.from_key(PRIVATE_KEY)
 
-# Define request model
-class ClaimRequest(BaseModel):
-    userAddress: str
-    faucetAddress: str
-    shouldWhitelist: bool = True
+# Initialize signer
+signer = Web3(Web3.HTTPProvider("https://rpc.lisk.com")).eth.account.from_key(PRIVATE_KEY)
 
-# Define the FAUCET_ABI here to make it available globally
+# FAUCET_ABI (from your provided code)
 FAUCET_ABI = [
     {
-        "inputs": [],
+        "inputs": [
+            {
+                "internalType": "string",
+                "name": "_name",
+                "type": "string"
+            },
+            {
+                "internalType": "address",
+                "name": "_token",
+                "type": "address"
+            },
+            {
+                "internalType": "address",
+                "name": "_backend",
+                "type": "address"
+            },
+            {
+                "internalType": "address",
+                "name": "_owner",
+                "type": "address"
+            }
+        ],
         "stateMutability": "nonpayable",
         "type": "constructor"
     },
@@ -107,6 +117,12 @@ FAUCET_ABI = [
                 "internalType": "uint256",
                 "name": "amount",
                 "type": "uint256"
+            },
+            {
+                "indexed": False,
+                "internalType": "bool",
+                "name": "isEther",
+                "type": "bool"
             }
         ],
         "name": "Claimed",
@@ -119,6 +135,18 @@ FAUCET_ABI = [
                 "indexed": True,
                 "internalType": "address",
                 "name": "faucet",
+                "type": "address"
+            },
+            {
+                "indexed": False,
+                "internalType": "string",
+                "name": "name",
+                "type": "string"
+            },
+            {
+                "indexed": False,
+                "internalType": "address",
+                "name": "token",
                 "type": "address"
             }
         ],
@@ -145,6 +173,12 @@ FAUCET_ABI = [
                 "internalType": "uint256",
                 "name": "backendFee",
                 "type": "uint256"
+            },
+            {
+                "indexed": False,
+                "internalType": "bool",
+                "name": "isEther",
+                "type": "bool"
             }
         ],
         "name": "Funded",
@@ -202,6 +236,12 @@ FAUCET_ABI = [
                 "internalType": "uint256",
                 "name": "amount",
                 "type": "uint256"
+            },
+            {
+                "indexed": False,
+                "internalType": "bool",
+                "name": "isEther",
+                "type": "bool"
             }
         ],
         "name": "Withdrawn",
@@ -234,7 +274,13 @@ FAUCET_ABI = [
         "type": "function"
     },
     {
-        "inputs": [],
+        "inputs": [
+            {
+                "internalType": "address[]",
+                "name": "users",
+                "type": "address[]"
+            }
+        ],
         "name": "claim",
         "outputs": [],
         "stateMutability": "nonpayable",
@@ -254,19 +300,6 @@ FAUCET_ABI = [
         "type": "function"
     },
     {
-        "inputs": [
-            {
-                "internalType": "address[]",
-                "name": "users",
-                "type": "address[]"
-            }
-        ],
-        "name": "claimForBatch",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function"
-    },
-    {
         "inputs": [],
         "name": "endTime",
         "outputs": [
@@ -280,7 +313,13 @@ FAUCET_ABI = [
         "type": "function"
     },
     {
-        "inputs": [],
+        "inputs": [
+            {
+                "internalType": "uint256",
+                "name": "_tokenAmount",
+                "type": "uint256"
+            }
+        ],
         "name": "fund",
         "outputs": [],
         "stateMutability": "payable",
@@ -292,8 +331,13 @@ FAUCET_ABI = [
         "outputs": [
             {
                 "internalType": "uint256",
-                "name": "",
+                "name": "balance",
                 "type": "uint256"
+            },
+            {
+                "internalType": "bool",
+                "name": "isEther",
+                "type": "bool"
             }
         ],
         "stateMutability": "view",
@@ -345,6 +389,19 @@ FAUCET_ABI = [
                 "internalType": "bool",
                 "name": "",
                 "type": "bool"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "name",
+        "outputs": [
+            {
+                "internalType": "string",
+                "name": "",
+                "type": "string"
             }
         ],
         "stateMutability": "view",
@@ -456,6 +513,19 @@ FAUCET_ABI = [
         "type": "function"
     },
     {
+        "inputs": [],
+        "name": "token",
+        "outputs": [
+            {
+                "internalType": "address",
+                "name": "",
+                "type": "address"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
         "inputs": [
             {
                 "internalType": "address",
@@ -487,9 +557,21 @@ FAUCET_ABI = [
     }
 ]
 
-async def wait_for_transaction_receipt(w3: Web3, tx_hash: str, timeout: int = 120) -> TxReceipt:
+async def get_web3_instance(chain_id: int) -> Web3:
     """
-    Wait for a transaction receipt with timeout.
+    Get Web3 instance for the given chain ID.
+    """
+    rpc_url = get_rpc_url(chain_id)
+    if not rpc_url:
+        raise HTTPException(status_code=400, detail=f"No RPC URL configured for chain {chain_id}")
+    w3 = Web3(Web3.HTTPProvider(rpc_url))
+    if not w3.is_connected():
+        raise HTTPException(status_code=500, detail=f"Failed to connect to node for chain {chain_id}: {rpc_url}")
+    return w3
+
+async def wait_for_transaction_receipt(w3: Web3, tx_hash: str, timeout: int = 300) -> TxReceipt:
+    """
+    Wait for a transaction receipt with extended timeout.
     """
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
@@ -499,193 +581,158 @@ async def wait_for_transaction_receipt(w3: Web3, tx_hash: str, timeout: int = 12
                 return receipt
         except Exception:
             pass
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
     raise TimeoutError(f"Transaction {tx_hash} not mined within {timeout} seconds")
+
+async def check_whitelist_status(w3: Web3, faucet_address: str, user_address: str) -> bool:
+    """
+    Check if a user is whitelisted with retries.
+    """
+    faucet_contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
+    for _ in range(5):
+        try:
+            return faucet_contract.functions.isWhitelisted(user_address).call()
+        except (ContractLogicError, ValueError) as e:
+            print(f"Retry checking whitelist status: {str(e)}")
+            await asyncio.sleep(2)
+    raise Exception("Failed to check whitelist status after retries")
 
 async def whitelist_user(
     w3: Web3, 
     signer: LocalAccount, 
     faucet_address: str, 
-    user_address: str,
-    faucet_abi
+    user_address: str
 ) -> str:
     """
-    Add a user address to the faucet's whitelist.
+    Whitelist a user for the faucet.
     """
     try:
-        # Create contract instance
-        faucet_contract = w3.eth.contract(address=faucet_address, abi=faucet_abi)
-        
-        # Check if we need legacy or EIP-1559 transactions
+        faucet_contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
+        supports_eip1559 = False
         try:
-            # Try to get gas parameters for EIP-1559
             latest_block = w3.eth.get_block('latest')
             supports_eip1559 = 'baseFeePerGas' in latest_block
         except (KeyError, AttributeError):
-            supports_eip1559 = False
+            pass
         
-        # Create transaction parameters
         tx_params = {
             'from': signer.address,
-            'gas': 200000,  # Set appropriate gas limit
+            'gas': 200000,
             'nonce': w3.eth.get_transaction_count(signer.address),
+            'chainId': w3.eth.chain_id
         }
         
-        # Add appropriate gas price parameters
         if supports_eip1559:
-            # EIP-1559 transaction
-            base_fee = latest_block['baseFeePerGas'] if isinstance(latest_block, dict) else latest_block.baseFeePerGas
+            base_fee = latest_block.get('baseFeePerGas', 0)
             priority_fee = w3.eth.max_priority_fee
             max_fee_per_gas = int(base_fee * 1.25) + priority_fee
-            
             tx_params.update({
                 'maxFeePerGas': max_fee_per_gas,
                 'maxPriorityFeePerGas': priority_fee,
-                'type': 2  # EIP-1559 transaction
+                'type': 2
             })
         else:
-            # Legacy transaction
             tx_params['gasPrice'] = w3.eth.gas_price
         
-        # Build transaction for setWhitelist function
-        tx = faucet_contract.functions.setWhitelist(
-            user_address, 
-            True  # Set status to True to whitelist
-        ).build_transaction(tx_params)
+        # Check signer balance
+        balance = w3.eth.get_balance(signer.address)
+        if balance < 6250200000000000:  # Minimum gas cost from error
+            raise Exception(f"Insufficient funds in signer account {signer.address}: balance {w3.from_wei(balance, 'ether')} CELO, required ~0.00625 CELO")
         
-        # Sign the transaction
-        signed_tx = signer.sign_transaction(tx)
-        
-        # Check if we have the raw transaction
-        if not hasattr(signed_tx, 'rawTransaction'):
-            # Try to handle the case where signed_tx might be a dictionary or have a different structure
-            if isinstance(signed_tx, dict) and 'rawTransaction' in signed_tx:
-                raw_tx = signed_tx['rawTransaction']
-            else:
-                # If we can't find rawTransaction, try alternative approaches
-                # This might be necessary for some versions of Web3.py
-                print(f"WARNING: SignedTransaction object lacks rawTransaction attribute. Type: {type(signed_tx)}")
-                print(f"SignedTransaction content: {dir(signed_tx)}")
-                
-                # Try to extract raw transaction from the signed transaction object
-                # This is a fallback approach
-                if hasattr(signed_tx, 'raw'):
-                    raw_tx = signed_tx.raw
-                elif hasattr(signed_tx, 'raw_transaction'):
-                    raw_tx = signed_tx.raw_transaction
-                else:
-                    # If all else fails, use the serialized transaction
-                    raw_tx = w3.eth.account.sign_transaction(tx, signer.key).rawTransaction
-        else:
-            raw_tx = signed_tx.rawTransaction
-        
-        # Send raw transaction
-        tx_hash = w3.eth.send_raw_transaction(raw_tx)
-        
-        # Wait for transaction confirmation
+        tx = faucet_contract.functions.setWhitelist(user_address, True).build_transaction(tx_params)
+        signed_tx = w3.eth.account.sign_transaction(tx, signer.key)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
         receipt = await wait_for_transaction_receipt(w3, tx_hash.hex())
         
-        # Check receipt status
-        status = receipt['status'] if isinstance(receipt, dict) else receipt.status
-        if status != 1:
+        if receipt.get('status', 0) != 1:
             raise Exception(f"Transaction failed: {tx_hash.hex()}")
-            
         return tx_hash.hex()
     except Exception as e:
         print(f"ERROR in whitelist_user: {str(e)}")
-        raise Exception(f"Failed to whitelist user: {str(e)}")
+        raise
 
 async def claim_tokens(
     w3: Web3, 
     signer: LocalAccount, 
     faucet_address: str, 
-    user_address: str,
-    faucet_abi
+    user_address: str
 ) -> str:
     """
     Claim tokens from the faucet on behalf of a user.
     """
     try:
-        # Create contract instance
-        faucet_contract = w3.eth.contract(address=faucet_address, abi=faucet_abi)
+        faucet_contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
         
-        # Check if we need legacy or EIP-1559 transactions
+        # Check contract state
+        start_time = faucet_contract.functions.startTime().call()
+        end_time = faucet_contract.functions.endTime().call()
+        claim_amount = faucet_contract.functions.claimAmount().call()
+        has_claimed = faucet_contract.functions.hasClaimed(user_address).call()
+        is_ether = faucet_contract.functions.token().call() == "0x0000000000000000000000000000000000000000"
+        balance = w3.eth.get_balance(faucet_address) if is_ether else faucet_contract.functions.getFaucetBalance().call()[0]
+
+        current_time = int(datetime.now().timestamp())
+        if current_time < start_time:
+            raise HTTPException(status_code=400, detail=f"Claim period not started: starts at {start_time}")
+        if current_time > end_time:
+            raise HTTPException(status_code=400, detail=f"Claim period ended: ended at {end_time}")
+        if claim_amount == 0:
+            raise HTTPException(status_code=400, detail="Claim amount not set")
+        if has_claimed:
+            raise HTTPException(status_code=400, detail="User has already claimed")
+        if balance < claim_amount:
+            raise HTTPException(status_code=400, detail=f"Insufficient faucet balance: {balance} available, {claim_amount} needed")
+
+        # Check if user is a contract
+        code = w3.eth.get_code(user_address)
+        if len(code) > 0:
+            print(f"Warning: User {user_address} is a contract. Ensure it can receive Ether.")
+
+        supports_eip1559 = False
         try:
-            # Try to get gas parameters for EIP-1559
             latest_block = w3.eth.get_block('latest')
             supports_eip1559 = 'baseFeePerGas' in latest_block
         except (KeyError, AttributeError):
-            supports_eip1559 = False
+            pass
         
-        # Create transaction parameters
         tx_params = {
             'from': signer.address,
-            'gas': 300000,  # Higher gas limit for token transfers
+            'gas': 300000,
             'nonce': w3.eth.get_transaction_count(signer.address),
+            'chainId': w3.eth.chain_id
         }
         
-        # Add appropriate gas price parameters
         if supports_eip1559:
-            # EIP-1559 transaction
-            base_fee = latest_block['baseFeePerGas'] if isinstance(latest_block, dict) else latest_block.baseFeePerGas
+            base_fee = latest_block.get('baseFeePerGas', 0)
             priority_fee = w3.eth.max_priority_fee
             max_fee_per_gas = int(base_fee * 1.25) + priority_fee
-            
             tx_params.update({
                 'maxFeePerGas': max_fee_per_gas,
                 'maxPriorityFeePerGas': priority_fee,
-                'type': 2  # EIP-1559 transaction
+                'type': 2
             })
         else:
-            # Legacy transaction
             tx_params['gasPrice'] = w3.eth.gas_price
         
-        # Build transaction for claiming tokens
-        tx = faucet_contract.functions.claimForBatch(
-            [user_address]  # Pass as a single element array since we're claiming for one user
-        ).build_transaction(tx_params)
-        
-        # Sign the transaction
-        signed_tx = signer.sign_transaction(tx)
-        
-        # Check if we have the raw transaction
-        if not hasattr(signed_tx, 'rawTransaction'):
-            # Try to handle the case where signed_tx might be a dictionary or have a different structure
-            if isinstance(signed_tx, dict) and 'rawTransaction' in signed_tx:
-                raw_tx = signed_tx['rawTransaction']
-            else:
-                # If we can't find rawTransaction, try alternative approaches
-                # This might be necessary for some versions of Web3.py
-                print(f"WARNING: SignedTransaction object lacks rawTransaction attribute. Type: {type(signed_tx)}")
-                print(f"SignedTransaction content: {dir(signed_tx)}")
-                
-                # Try to extract raw transaction from the signed transaction object
-                # This is a fallback approach
-                if hasattr(signed_tx, 'raw'):
-                    raw_tx = signed_tx.raw
-                elif hasattr(signed_tx, 'raw_transaction'):
-                    raw_tx = signed_tx.raw_transaction
-                else:
-                    # If all else fails, use the serialized transaction
-                    raw_tx = w3.eth.account.sign_transaction(tx, signer.key).rawTransaction
-        else:
-            raw_tx = signed_tx.rawTransaction
-        
-        # Send raw transaction
-        tx_hash = w3.eth.send_raw_transaction(raw_tx)
-        
-        # Wait for transaction confirmation
+        tx = faucet_contract.functions.claim([user_address]).build_transaction(tx_params)
+        signed_tx = w3.eth.account.sign_transaction(tx, signer.key)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
         receipt = await wait_for_transaction_receipt(w3, tx_hash.hex())
         
-        # Check receipt status
-        status = receipt['status'] if isinstance(receipt, dict) else receipt.status
-        if status != 1:
+        if receipt.get('status', 0) != 1:
             raise Exception(f"Transaction failed: {tx_hash.hex()}")
-            
         return tx_hash.hex()
+    except HTTPException as e:
+        raise e
     except Exception as e:
         print(f"ERROR in claim_tokens: {str(e)}")
-        raise Exception(f"Failed to claim tokens: {str(e)}")
+        raise
+
+class ClaimRequest(BaseModel):
+    userAddress: str
+    faucetAddress: str
+    shouldWhitelist: bool = True
+    chainId: int
 
 @app.get("/health")
 async def health_check():
@@ -694,70 +741,88 @@ async def health_check():
 @app.post("/claim")
 async def claim(request: ClaimRequest):
     try:
-        print(f"Processing claim request for user {request.userAddress}, faucet {request.faucetAddress}")
+        print(f"Received claim request: {request.dict()}")
         
-        # Validate and convert addresses to checksum format
-        if not w3.is_address(request.userAddress) or not w3.is_address(request.faucetAddress):
-            print(f"Invalid addresses: user={request.userAddress}, faucet={request.faucetAddress}")
-            raise HTTPException(status_code=400, detail="Invalid userAddress or faucetAddress")
+        w3 = await get_web3_instance(request.chainId)
         
-        # Convert to checksum addresses
-        user_address = w3.to_checksum_address(request.userAddress)
-        faucet_address = w3.to_checksum_address(request.faucetAddress)
+        # Validate addresses
+        try:
+            user_address = w3.to_checksum_address(request.userAddress)
+        except ValueError:
+            print(f"Invalid userAddress: {request.userAddress}")
+            raise HTTPException(status_code=400, detail=f"Invalid userAddress: {request.userAddress}")
+        try:
+            faucet_address = w3.to_checksum_address(request.faucetAddress)
+        except ValueError:
+            print(f"Invalid faucetAddress: {request.faucetAddress}")
+            raise HTTPException(status_code=400, detail=f"Invalid faucetAddress: {request.faucetAddress}")
+        
+        # Validate chainId
+        valid_chain_ids = [1135, 42220, 42161]
+        if request.chainId not in valid_chain_ids:
+            print(f"Invalid chainId: {request.chainId}")
+            raise HTTPException(status_code=400, detail=f"Invalid chainId: {request.chainId}. Must be one of {valid_chain_ids}")
+        
         print(f"Converted to checksum addresses: user={user_address}, faucet={faucet_address}")
 
-        # Whitelist user if requested
+        faucet_contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
+        balance = w3.eth.get_balance(faucet_address)
+        backend = faucet_contract.functions.BACKEND().call()
+        backend_fee_percent = faucet_contract.functions.BACKEND_FEE_PERCENT().call()
+        native_currency = "CELO" if request.chainId == 42220 else "LISK" if request.chainId == 1135 else "ETH"
+        print(f"Faucet details: balance={w3.from_wei(balance, 'ether')} {native_currency}, BACKEND={backend}, BACKEND_FEE_PERCENT={backend_fee_percent}%")
+
+        if not Web3.is_address(backend):
+            print(f"Invalid BACKEND address in contract: {backend}")
+            raise HTTPException(status_code=500, detail="Invalid BACKEND address in contract")
+
+        whitelist_tx = None
         if request.shouldWhitelist:
             print(f"Attempting to whitelist user {user_address}")
             try:
-                whitelist_tx = await whitelist_user(
-                    w3, signer, faucet_address, user_address, FAUCET_ABI
-                )
+                whitelist_tx = await whitelist_user(w3, signer, faucet_address, user_address)
                 print(f"Whitelisted user {user_address}, tx: {whitelist_tx}")
             except Exception as e:
-                error_msg = f"Failed to whitelist user {user_address}: {str(e)}"
-                print(error_msg)
-                # Continue with claiming even if whitelisting fails - user might already be whitelisted
-                print("Continuing to token claim despite whitelist failure")
+                print(f"Failed to whitelist user {user_address}: {str(e)}")
 
-        # Check if user is whitelisted
         try:
-            faucet_contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
-            is_whitelisted = faucet_contract.functions.isWhitelisted(user_address).call()
+            is_whitelisted = await check_whitelist_status(w3, faucet_address, user_address)
             if not is_whitelisted:
-                error_msg = f"User {user_address} is not whitelisted for faucet {faucet_address}"
-                print(error_msg)
+                print(f"User {user_address} is not whitelisted for faucet {faucet_address}")
                 raise HTTPException(status_code=403, detail="User is not whitelisted")
             print(f"Confirmed user {user_address} is whitelisted")
         except Exception as e:
-            error_msg = f"Error checking whitelist status: {str(e)}"
-            print(error_msg)
+            print(f"Error checking whitelist status: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Error checking whitelist status: {str(e)}")
 
-        # Claim tokens
-        try:
-            print(f"Attempting to claim tokens for {user_address}")
-            tx_hash = await claim_tokens(w3, signer, faucet_address, user_address, FAUCET_ABI)
-            print(f"Claimed tokens for {user_address}, tx: {tx_hash}")
-            return {"success": True, "txHash": tx_hash}
-        except Exception as e:
-            error_msg = f"Failed to claim tokens for {user_address}: {str(e)}"
-            print(error_msg)
-            raise HTTPException(status_code=500, detail=f"Failed to claim tokens: {str(e)}")
-    except ValueError as e:
-        # Handle invalid address format errors
-        error_msg = f"Invalid address format: {str(e)}"
-        print(error_msg)
-        raise HTTPException(status_code=400, detail=error_msg)
+        print(f"Attempting to claim tokens for {user_address}")
+        tx_hash = await claim_tokens(w3, signer, faucet_address, user_address)
+        print(f"Claimed tokens for {user_address}, tx: {tx_hash}")
+        return {"success": True, "txHash": tx_hash, "whitelistTx": whitelist_tx}
     except HTTPException as e:
-        # Re-raise HTTP exceptions
         raise e
     except Exception as e:
-        # Catch all other exceptions
-        error_msg = f"Server error for user {request.userAddress}: {str(e)}"
-        print(error_msg)
-        raise HTTPException(status_code=500, detail=error_msg)
+        # Attempt to get revert reason
+        try:
+            receipt = w3.eth.get_transaction_receipt("0xa0b938ef60825b2ed866f71459605253169df213de37a2d344faa9c9d4055fcc")
+            if receipt.get('status', 0) == 0:
+                # Simulate transaction to get revert reason
+                faucet_contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
+                tx_params = {
+                    'from': signer.address,
+                    'to': faucet_address,
+                    'data': faucet_contract.functions.claim([user_address]).encodeABI()
+                }
+                try:
+                    w3.eth.call(tx_params)
+                except ContractLogicError as cle:
+                    print(f"Revert reason: {str(cle)}")
+                    raise HTTPException(status_code=400, detail=f"Claim failed: {str(cle)}")
+        except Exception as re:
+            print(f"Failed to retrieve revert reason: {str(re)}")
+        print(f"Server error for user {request.userAddress}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=10000)
