@@ -24,7 +24,7 @@ def get_rpc_url(chain_id: int) -> str:
         os.getenv(env_key) or
         os.getenv("RPC_URL") or
         os.getenv("RPC_URL_ARBIT") if chain_id == 42161 else
-        os.getenv("RPC_URL_LISK") if chain_id == 1135 else
+        os.getenv("RPC_URL_LISK") if chain_id == 4202 else
         os.getenv("RPC_URL_CELO") if chain_id == 42220 else
         ""
     )
