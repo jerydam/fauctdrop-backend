@@ -17,7 +17,7 @@ from config import PRIVATE_KEY, get_rpc_url
 # Add parent directory to sys.path for config import
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-app = FastAPI(title="Faucet Backend API")
+app = FastAPI(title="FaucetDrops Backend API")
 
 # Configure CORS
 app.add_middleware(
@@ -772,6 +772,9 @@ class SetClaimParametersRequest(BaseModel):
     endTime: int
     chainId: int
 
+class GetSecretCodeRequest(BaseModel):
+    faucetAddress: str
+
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
@@ -870,6 +873,36 @@ async def get_secret_codes():
     except Exception as e:
         print(f"Supabase error in get_secret_codes: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Supabase error: {str(e)}")
+
+@app.get("/get-secret-code")
+async def get_secret_code(request: GetSecretCodeRequest):
+    try:
+        if not Web3.is_address(request.faucetAddress):
+            raise HTTPException(status_code=400, detail=f"Invalid faucetAddress: {request.faucetAddress}")
+        
+        faucet_address = Web3.to_checksum_address(request.faucetAddress)
+        
+        response = supabase.table("secret_codes").select("*").eq("faucet_address", faucet_address).execute()
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(status_code=404, detail=f"No secret code found for faucet address: {faucet_address}")
+        
+        record = response.data[0]
+        current_time = int(datetime.now().timestamp())
+        is_valid = record["start_time"] <= current_time <= record["end_time"]
+        
+        return {
+            "faucetAddress": faucet_address,
+            "secretCode": record["secret_code"],
+            "startTime": record["start_time"],
+            "endTime": record["end_time"],
+            "isValid": is_valid,
+            "createdAt": record["created_at"]
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Error in get_secret_code: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve secret code: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
