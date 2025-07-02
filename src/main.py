@@ -30,13 +30,14 @@ app.add_middleware(
 # Validate environment variables
 if not PRIVATE_KEY:
     raise HTTPException(status_code=500, detail="PRIVATE_KEY not set in environment variables")
+
 if not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_KEY"):
     raise HTTPException(status_code=500, detail="SUPABASE_URL or SUPABASE_KEY not set in environment variables")
 
 # Initialize Supabase client
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
-# FAUCET_ABI
+# FAUCET_ABI - Updated with the necessary functions
 FAUCET_ABI = [
 	{
 		"inputs": [
@@ -54,6 +55,11 @@ FAUCET_ABI = [
 				"internalType": "address",
 				"name": "_backend",
 				"type": "address"
+			},
+			{
+				"internalType": "bool",
+				"name": "_useBackend",
+				"type": "bool"
 			},
 			{
 				"internalType": "address",
@@ -102,6 +108,17 @@ FAUCET_ABI = [
 	{
 		"inputs": [],
 		"name": "EmptyName",
+		"type": "error"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "faucet",
+				"type": "address"
+			}
+		],
+		"name": "FaucetDeletedError",
 		"type": "error"
 	},
 	{
@@ -177,10 +194,10 @@ FAUCET_ABI = [
 		"type": "error"
 	},
 	{
-		"anonymous": False,
+		"anonymous":False,
 		"inputs": [
 			{
-				"indexed": True,
+				"indexed":True,
 				"internalType": "address",
 				"name": "admin",
 				"type": "address"
@@ -190,10 +207,10 @@ FAUCET_ABI = [
 		"type": "event"
 	},
 	{
-		"anonymous": False,
+		"anonymous":False,
 		"inputs": [
 			{
-				"indexed": True,
+				"indexed":True,
 				"internalType": "address",
 				"name": "newBackend",
 				"type": "address"
@@ -203,10 +220,10 @@ FAUCET_ABI = [
 		"type": "event"
 	},
 	{
-		"anonymous": False,
+		"anonymous":False,
 		"inputs": [
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "uint256",
 				"name": "userCount",
 				"type": "uint256"
@@ -216,10 +233,10 @@ FAUCET_ABI = [
 		"type": "event"
 	},
 	{
-		"anonymous": False,
+		"anonymous":False,
 		"inputs": [
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "uint256",
 				"name": "userCount",
 				"type": "uint256"
@@ -229,22 +246,22 @@ FAUCET_ABI = [
 		"type": "event"
 	},
 	{
-		"anonymous": False,
+		"anonymous":False,
 		"inputs": [
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "uint256",
 				"name": "claimAmount",
 				"type": "uint256"
 			},
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "uint256",
 				"name": "startTime",
 				"type": "uint256"
 			},
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "uint256",
 				"name": "endTime",
 				"type": "uint256"
@@ -254,10 +271,10 @@ FAUCET_ABI = [
 		"type": "event"
 	},
 	{
-		"anonymous": False,
+		"anonymous":False,
 		"inputs": [
 			{
-				"indexed": True,
+				"indexed":True,
 				"internalType": "address",
 				"name": "user",
 				"type": "address"
@@ -267,22 +284,22 @@ FAUCET_ABI = [
 		"type": "event"
 	},
 	{
-		"anonymous": False,
+		"anonymous":False,
 		"inputs": [
 			{
-				"indexed": True,
+				"indexed":True,
 				"internalType": "address",
 				"name": "user",
 				"type": "address"
 			},
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "uint256",
 				"name": "amount",
 				"type": "uint256"
 			},
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "bool",
 				"name": "isEther",
 				"type": "bool"
@@ -292,10 +309,10 @@ FAUCET_ABI = [
 		"type": "event"
 	},
 	{
-		"anonymous": False,
+		"anonymous":False,
 		"inputs": [
 			{
-				"indexed": True,
+				"indexed":True,
 				"internalType": "address",
 				"name": "user",
 				"type": "address"
@@ -305,16 +322,16 @@ FAUCET_ABI = [
 		"type": "event"
 	},
 	{
-		"anonymous": False,
+		"anonymous":False,
 		"inputs": [
 			{
-				"indexed": True,
+				"indexed":True,
 				"internalType": "address",
 				"name": "user",
 				"type": "address"
 			},
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "uint256",
 				"name": "amount",
 				"type": "uint256"
@@ -324,22 +341,22 @@ FAUCET_ABI = [
 		"type": "event"
 	},
 	{
-		"anonymous": False,
+		"anonymous":False,
 		"inputs": [
 			{
-				"indexed": True,
+				"indexed":True,
 				"internalType": "address",
 				"name": "faucet",
 				"type": "address"
 			},
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "string",
 				"name": "name",
 				"type": "string"
 			},
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "address",
 				"name": "token",
 				"type": "address"
@@ -349,10 +366,10 @@ FAUCET_ABI = [
 		"type": "event"
 	},
 	{
-		"anonymous": False,
+		"anonymous":False,
 		"inputs": [
 			{
-				"indexed": True,
+				"indexed":True,
 				"internalType": "address",
 				"name": "faucet",
 				"type": "address"
@@ -362,28 +379,28 @@ FAUCET_ABI = [
 		"type": "event"
 	},
 	{
-		"anonymous": False,
+		"anonymous":False,
 		"inputs": [
 			{
-				"indexed": True,
+				"indexed":True,
 				"internalType": "address",
 				"name": "funder",
 				"type": "address"
 			},
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "uint256",
 				"name": "amount",
 				"type": "uint256"
 			},
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "uint256",
 				"name": "backendFee",
 				"type": "uint256"
 			},
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "bool",
 				"name": "isEther",
 				"type": "bool"
@@ -393,10 +410,10 @@ FAUCET_ABI = [
 		"type": "event"
 	},
 	{
-		"anonymous": False,
+		"anonymous":False,
 		"inputs": [
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "string",
 				"name": "newName",
 				"type": "string"
@@ -406,16 +423,16 @@ FAUCET_ABI = [
 		"type": "event"
 	},
 	{
-		"anonymous": False,
+		"anonymous":False,
 		"inputs": [
 			{
-				"indexed": True,
+				"indexed":True,
 				"internalType": "address",
 				"name": "previousOwner",
 				"type": "address"
 			},
 			{
-				"indexed": True,
+				"indexed":True,
 				"internalType": "address",
 				"name": "newOwner",
 				"type": "address"
@@ -425,10 +442,10 @@ FAUCET_ABI = [
 		"type": "event"
 	},
 	{
-		"anonymous": False,
+		"anonymous":False,
 		"inputs": [
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "bool",
 				"name": "paused",
 				"type": "bool"
@@ -438,16 +455,16 @@ FAUCET_ABI = [
 		"type": "event"
 	},
 	{
-		"anonymous": False,
+		"anonymous":False,
 		"inputs": [
 			{
-				"indexed": True,
+				"indexed":True,
 				"internalType": "address",
 				"name": "user",
 				"type": "address"
 			},
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "bool",
 				"name": "status",
 				"type": "bool"
@@ -457,22 +474,22 @@ FAUCET_ABI = [
 		"type": "event"
 	},
 	{
-		"anonymous": False,
+		"anonymous":False,
 		"inputs": [
 			{
-				"indexed": True,
+				"indexed":True,
 				"internalType": "address",
 				"name": "owner",
 				"type": "address"
 			},
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "uint256",
 				"name": "amount",
 				"type": "uint256"
 			},
 			{
-				"indexed": False,
+				"indexed":False,
 				"internalType": "bool",
 				"name": "isEther",
 				"type": "bool"
@@ -518,6 +535,25 @@ FAUCET_ABI = [
 		"name": "addAdmin",
 		"outputs": [],
 		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"name": "admins",
+		"outputs": [
+			{
+				"internalType": "address",
+				"name": "",
+				"type": "address"
+			}
+		],
+		"stateMutability": "view",
 		"type": "function"
 	},
 	{
@@ -616,6 +652,19 @@ FAUCET_ABI = [
 	},
 	{
 		"inputs": [],
+		"name": "deleted",
+		"outputs": [
+			{
+				"internalType": "bool",
+				"name": "",
+				"type": "bool"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
 		"name": "endTime",
 		"outputs": [
 			{
@@ -667,6 +716,19 @@ FAUCET_ABI = [
 				"internalType": "bool",
 				"name": "",
 				"type": "bool"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "getAllAdmins",
+		"outputs": [
+			{
+				"internalType": "address[]",
+				"name": "",
+				"type": "address[]"
 			}
 		],
 		"stateMutability": "view",
@@ -801,6 +863,19 @@ FAUCET_ABI = [
 			{
 				"internalType": "bool",
 				"name": "isEther",
+				"type": "bool"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "getUseBackend",
+		"outputs": [
+			{
+				"internalType": "bool",
+				"name": "",
 				"type": "bool"
 			}
 		],
@@ -1155,6 +1230,19 @@ FAUCET_ABI = [
 		"type": "function"
 	},
 	{
+		"inputs": [],
+		"name": "useBackend",
+		"outputs": [
+			{
+				"internalType": "bool",
+				"name": "",
+				"type": "bool"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
 		"inputs": [
 			{
 				"internalType": "address",
@@ -1241,8 +1329,17 @@ async def check_pause_status(w3: Web3, faucet_address: str) -> bool:
 
 async def whitelist_user(w3: Web3, faucet_address: str, user_address: str) -> str:
     try:
+        print(f"Starting whitelist process for user: {user_address}")
+        
         faucet_contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
-        supports_eip1559 = False
+        
+        # Check if user is already whitelisted
+        is_already_whitelisted = await check_whitelist_status(w3, faucet_address, user_address)
+        if is_already_whitelisted:
+            print(f"User {user_address} is already whitelisted")
+            return "already_whitelisted"
+        
+        supports_eip1559 =False
         try:
             latest_block = w3.eth.get_block('latest')
             supports_eip1559 = 'baseFeePerGas' in latest_block
@@ -1255,6 +1352,11 @@ async def whitelist_user(w3: Web3, faucet_address: str, user_address: str) -> st
             'nonce': w3.eth.get_transaction_count(signer.address),
             'chainId': w3.eth.chain_id
         }
+        
+        # Build transaction first to estimate gas
+        tx_data = faucet_contract.functions.setWhitelist(user_address,True).build_transaction(tx_params)
+        estimated_gas = w3.eth.estimate_gas(tx_data)
+        tx_params['gas'] = int(estimated_gas * 1.2)  # Add 20% buffer
         
         if supports_eip1559:
             base_fee = latest_block.get('baseFeePerGas', 0)
@@ -1269,22 +1371,33 @@ async def whitelist_user(w3: Web3, faucet_address: str, user_address: str) -> st
             tx_params['gasPrice'] = w3.eth.gas_price
         
         balance = w3.eth.get_balance(signer.address)
-        if balance < 6250200000000000:
-            raise HTTPException(status_code=400, detail=f"Insufficient funds in signer account {signer.address}: balance {w3.from_wei(balance, 'ether')} CELO, required ~0.00625 CELO")
+        required_balance = tx_params['gas'] * tx_params.get('gasPrice', tx_params.get('maxFeePerGas', 0))
+        if balance < required_balance:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Insufficient funds in signer account {signer.address}: balance {w3.from_wei(balance, 'ether')} ETH, required {w3.from_wei(required_balance, 'ether')} ETH"
+            )
         
-        tx = faucet_contract.functions.setWhitelist(user_address, True).build_transaction(tx_params)
+        print(f"Building whitelist transaction with params: {tx_params}")
+        tx = faucet_contract.functions.setWhitelist(user_address,True).build_transaction(tx_params)
         signed_tx = w3.eth.account.sign_transaction(tx, signer.key)
         tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        
+        print(f"Whitelist transaction sent: {tx_hash.hex()}")
         receipt = await wait_for_transaction_receipt(w3, tx_hash.hex())
         
         if receipt.get('status', 0) != 1:
-            raise HTTPException(status_code=400, detail=f"Transaction failed: {tx_hash.hex()}")
+            print(f"Whitelist transaction failed: {receipt}")
+            raise HTTPException(status_code=400, detail=f"Whitelist transaction failed: {tx_hash.hex()}")
+        
+        print(f"Successfully whitelisted user {user_address}")
         return tx_hash.hex()
+        
     except HTTPException as e:
         raise e
     except Exception as e:
         print(f"ERROR in whitelist_user: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to whitelist user: {str(e)}")
 
 async def generate_secret_code() -> str:
     """Generate a 6-character alphanumeric secret code."""
@@ -1312,7 +1425,8 @@ async def verify_secret_code(faucet_address: str, secret_code: str) -> bool:
     try:
         response = supabase.table("secret_codes").select("*").eq("faucet_address", faucet_address).execute()
         if not response.data or len(response.data) == 0:
-            return False
+            returnFalse
+        
         record = response.data[0]
         current_time = int(datetime.now().timestamp())
         return (
@@ -1340,15 +1454,20 @@ async def claim_tokens(w3: Web3, faucet_address: str, user_address: str, secret_
         is_valid_code = await verify_secret_code(faucet_address, secret_code)
         if not is_valid_code:
             raise HTTPException(status_code=403, detail="Invalid or expired secret code")
-
+        
         # Check if contract is paused
         is_paused = await check_pause_status(w3, faucet_address)
         if is_paused:
             raise HTTPException(status_code=400, detail="Faucet is paused")
-
+        
+        # Check if user is whitelisted
+        is_whitelisted = await check_whitelist_status(w3, faucet_address, user_address)
+        if not is_whitelisted:
+            raise HTTPException(status_code=403, detail="User is not whitelisted. Please whitelist first.")
+        
         faucet_contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
         
-        supports_eip1559 = False
+        supports_eip1559 =False
         try:
             latest_block = w3.eth.get_block('latest')
             supports_eip1559 = 'baseFeePerGas' in latest_block
@@ -1362,7 +1481,7 @@ async def claim_tokens(w3: Web3, faucet_address: str, user_address: str, secret_
         }
         
         tx = faucet_contract.functions.claim([user_address]).build_transaction(tx_params)
-        tx_params['gas'] = w3.eth.estimate_gas(tx)
+        tx_params['gas'] = int(w3.eth.estimate_gas(tx) * 1.2)  # Add 20% buffer
         
         if supports_eip1559:
             base_fee = latest_block.get('baseFeePerGas', 0)
@@ -1377,16 +1496,21 @@ async def claim_tokens(w3: Web3, faucet_address: str, user_address: str, secret_
             tx_params['gasPrice'] = w3.eth.gas_price
         
         balance = w3.eth.get_balance(signer.address)
-        if balance < 6250200000000000:
-            raise HTTPException(status_code=400, detail=f"Insufficient funds in signer account {signer.address}: balance {w3.from_wei(balance, 'ether')} CELO, required ~0.00625 CELO")
+        required_balance = tx_params['gas'] * tx_params.get('gasPrice', tx_params.get('maxFeePerGas', 0))
+        if balance < required_balance:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Insufficient funds in signer account {signer.address}: balance {w3.from_wei(balance, 'ether')} ETH, required {w3.from_wei(required_balance, 'ether')} ETH"
+            )
         
-        signed_tx = w3.eth.account.sign_transaction(tx, signer.key)
+        tx_final = faucet_contract.functions.claim([user_address]).build_transaction(tx_params)
+        signed_tx = w3.eth.account.sign_transaction(tx_final, signer.key)
         tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
         receipt = await wait_for_transaction_receipt(w3, tx_hash.hex())
         
         if receipt.get('status', 0) != 1:
             try:
-                w3.eth.call(tx, block_identifier=receipt['blockNumber'])
+                w3.eth.call(tx_final, block_identifier=receipt['blockNumber'])
             except Exception as revert_error:
                 raise HTTPException(status_code=400, detail=f"Claim failed: {str(revert_error)}")
         
@@ -1397,77 +1521,18 @@ async def claim_tokens(w3: Web3, faucet_address: str, user_address: str, secret_
         print(f"ERROR in claim_tokens: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to claim tokens: {str(e)}")
 
-async def claim_tokens_no_code(w3: Web3, faucet_address: str, user_address: str) -> str:
-    """Claim tokens without requiring a secret code."""
-    try:
-        # Check if contract is paused
-        is_paused = await check_pause_status(w3, faucet_address)
-        if is_paused:
-            raise HTTPException(status_code=400, detail="Faucet is paused")
-
-        faucet_contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
-        
-        supports_eip1559 = False
-        try:
-            latest_block = w3.eth.get_block('latest')
-            supports_eip1559 = 'baseFeePerGas' in latest_block
-        except (KeyError, AttributeError):
-            pass
-        
-        tx_params = {
-            'from': signer.address,
-            'chainId': w3.eth.chain_id,
-            'nonce': w3.eth.get_transaction_count(signer.address, 'pending'),
-        }
-        
-        tx = faucet_contract.functions.claim([user_address]).build_transaction(tx_params)
-        tx_params['gas'] = w3.eth.estimate_gas(tx)
-        
-        if supports_eip1559:
-            base_fee = latest_block.get('baseFeePerGas', 0)
-            priority_fee = w3.eth.max_priority_fee
-            max_fee_per_gas = int(base_fee * 1.25) + priority_fee
-            tx_params.update({
-                'maxFeePerGas': max_fee_per_gas,
-                'maxPriorityFeePerGas': priority_fee,
-                'type': 2
-            })
-        else:
-            tx_params['gasPrice'] = w3.eth.gas_price
-        
-        balance = w3.eth.get_balance(signer.address)
-        if balance < 6250200000000000:
-            raise HTTPException(status_code=400, detail=f"Insufficient funds in signer account {signer.address}: balance {w3.from_wei(balance, 'ether')} CELO, required ~0.00625 CELO")
-        
-        signed_tx = w3.eth.account.sign_transaction(tx, signer.key)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-        receipt = await wait_for_transaction_receipt(w3, tx_hash.hex())
-        
-        if receipt.get('status', 0) != 1:
-            try:
-                w3.eth.call(tx, block_identifier=receipt['blockNumber'])
-            except Exception as revert_error:
-                raise HTTPException(status_code=400, detail=f"Claim failed: {str(revert_error)}")
-        
-        return tx_hash.hex()
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        print(f"ERROR in claim_tokens_no_code: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to claim tokens: {str(e)}")
+# Updated Pydantic models (remove shouldWhitelist from ClaimRequest)
+class WhitelistRequest(BaseModel):
+    userAddress: str
+    faucetAddress: str
+    secretCode: str
+    chainId: int
 
 class ClaimRequest(BaseModel):
     userAddress: str
     faucetAddress: str
     secretCode: str
-    shouldWhitelist: bool = True
-    chainId: int
-
-class ClaimNoCodeRequest(BaseModel):
-    userAddress: str
-    faucetAddress: str
-    shouldWhitelist: bool = True
-    chainId: int
+    chainId: int  # Remove shouldWhitelist field
 
 class SetClaimParametersRequest(BaseModel):
     faucetAddress: str
@@ -1479,9 +1544,92 @@ class SetClaimParametersRequest(BaseModel):
 class GetSecretCodeRequest(BaseModel):
     faucetAddress: str
 
+# API Endpoints
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+
+@app.post("/whitelist")
+async def whitelist_endpoint(request: WhitelistRequest):
+    """Separate endpoint to whitelist a user after verifying secret code."""
+    try:
+        print(f"Received whitelist request: {request.dict()}")
+        
+        w3 = await get_web3_instance(request.chainId)
+        
+        try:
+            user_address = w3.to_checksum_address(request.userAddress)
+            faucet_address = w3.to_checksum_address(request.faucetAddress)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid address: {str(e)}")
+        
+        if request.chainId not in [1135, 42220, 42161]:
+            raise HTTPException(status_code=400, detail=f"Invalid chainId: {request.chainId}. Must be one of [1135, 42220, 42161]")
+        
+        # Verify secret code first
+        is_valid_code = await verify_secret_code(faucet_address, request.secretCode)
+        if not is_valid_code:
+            raise HTTPException(status_code=403, detail="Invalid or expired secret code")
+        
+        print(f"Secret code verified for faucet: {faucet_address}")
+        
+        # Whitelist the user
+        whitelist_tx = await whitelist_user(w3, faucet_address, user_address)
+        
+        if whitelist_tx == "already_whitelisted":
+            return {"success": True, "message": "User already whitelisted", "txHash": None}
+        
+        return {"success": True, "txHash": whitelist_tx}
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Server error in whitelist endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/claim")
+async def claim_endpoint(request: ClaimRequest):
+    """Endpoint to claim tokens. User must be whitelisted first."""
+    try:
+        print(f"Received claim request: {request.dict()}")
+        
+        w3 = await get_web3_instance(request.chainId)
+        
+        try:
+            user_address = w3.to_checksum_address(request.userAddress)
+            faucet_address = w3.to_checksum_address(request.faucetAddress)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid address: {str(e)}")
+        
+        if request.chainId not in [1135, 42220, 42161]:
+            raise HTTPException(status_code=400, detail=f"Invalid chainId: {request.chainId}. Must be one of [1135, 42220, 42161]")
+        
+        print(f"Converted to checksum addresses: user={user_address}, faucet={faucet_address}")
+        
+        # Get faucet contract details for logging
+        faucet_contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
+        balance = w3.eth.get_balance(faucet_address)
+        backend = faucet_contract.functions.BACKEND().call()
+        backend_fee_percent = faucet_contract.functions.BACKEND_FEE_PERCENT().call()
+        native_currency = "CELO" if request.chainId == 42220 else "LISK" if request.chainId == 1135 else "ETH"
+        
+        print(f"Faucet details: balance={w3.from_wei(balance, 'ether')} {native_currency}, BACKEND={backend}, BACKEND_FEE_PERCENT={backend_fee_percent}%")
+        
+        if not Web3.is_address(backend):
+            raise HTTPException(status_code=500, detail="Invalid BACKEND address in contract")
+        
+        # Claim tokens (this will verify secret code and whitelist status internally)
+        tx_hash = await claim_tokens(w3, faucet_address, user_address, request.secretCode)
+        print(f"Claimed tokens for {user_address}, tx: {tx_hash}")
+        
+        return {"success": True, "txHash": tx_hash}
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Server error for user {request.userAddress}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/set-claim-parameters")
 async def set_claim_parameters_endpoint(request: SetClaimParametersRequest):
@@ -1499,103 +1647,11 @@ async def set_claim_parameters_endpoint(request: SetClaimParametersRequest):
         
         secret_code = await set_claim_parameters(faucet_address, request.startTime, request.endTime)
         print(f"Generated secret code for {faucet_address}: {secret_code}")
-        return {"success": True, "secretCode": secret_code}
+        return {"success":True, "secretCode": secret_code}
     except HTTPException as e:
         raise e
     except Exception as e:
         print(f"Server error in set_claim_parameters: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/claim")
-async def claim(request: ClaimRequest):
-    try:
-        print(f"Received claim request: {request.dict()}")
-        
-        w3 = await get_web3_instance(request.chainId)
-        
-        try:
-            user_address = w3.to_checksum_address(request.userAddress)
-            faucet_address = w3.to_checksum_address(request.faucetAddress)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid address: {str(e)}")
-        
-        if request.chainId not in [1135, 42220, 42161]:
-            raise HTTPException(status_code=400, detail=f"Invalid chainId: {request.chainId}. Must be one of [1135, 42220, 42161]")
-        
-        print(f"Converted to checksum addresses: user={user_address}, faucet={faucet_address}")
-
-        faucet_contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
-        balance = w3.eth.get_balance(faucet_address)
-        backend = faucet_contract.functions.BACKEND().call()
-        backend_fee_percent = faucet_contract.functions.BACKEND_FEE_PERCENT().call()
-        native_currency = "CELO" if request.chainId == 42220 else "LISK" if request.chainId == 1135 else "ETH"
-        print(f"Faucet details: balance={w3.from_wei(balance, 'ether')} {native_currency}, BACKEND={backend}, BACKEND_FEE_PERCENT={backend_fee_percent}%")
-
-        if not Web3.is_address(backend):
-            raise HTTPException(status_code=500, detail="Invalid BACKEND address in contract")
-
-        whitelist_tx = None
-        if request.shouldWhitelist:
-            try:
-                whitelist_tx = await whitelist_user(w3, faucet_address, user_address)
-                print(f"Whitelisted user {user_address}, tx: {whitelist_tx}")
-            except HTTPException as e:
-                raise e
-            except Exception as e:
-                print(f"Failed to whitelist user {user_address}: {str(e)}")
-
-        is_whitelisted = await check_whitelist_status(w3, faucet_address, user_address)
-        if not is_whitelisted:
-            raise HTTPException(status_code=403, detail="User is not whitelisted")
-        print(f"Confirmed user {user_address} is whitelisted")
-
-        tx_hash = await claim_tokens(w3, faucet_address, user_address, request.secretCode)
-        print(f"Claimed tokens for {user_address}, tx: {tx_hash}")
-        return {"success": True, "txHash": tx_hash, "whitelistTx": whitelist_tx}
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        print(f"Server error for user {request.userAddress}: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/claim-no-code")
-async def claim_no_code(request: ClaimNoCodeRequest):
-    """Endpoint to claim tokens without requiring a secret code."""
-    try:
-        print(f"Received claim-no-code request: {request.dict()}")
-        
-        w3 = await get_web3_instance(request.chainId)
-        
-        try:
-            user_address = w3.to_checksum_address(request.userAddress)
-            faucet_address = w3.to_checksum_address(request.faucetAddress)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid address: {str(e)}")
-        
-        if request.chainId not in [1135, 42220, 42161]:
-            raise HTTPException(status_code=400, detail=f"Invalid chainId: {request.chainId}. Must be one of [1135, 42220, 42161]")
-        
-        print(f"Converted to checksum addresses: user={user_address}, faucet={faucet_address}")
-
-        faucet_contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
-        balance = w3.eth.get_balance(faucet_address)
-        backend = faucet_contract.functions.BACKEND().call()
-        backend_fee_percent = faucet_contract.functions.BACKEND_FEE_PERCENT().call()
-        native_currency = "CELO" if request.chainId == 42220 else "LISK" if request.chainId == 1135 else "ETH"
-        print(f"Faucet details: balance={w3.from_wei(balance, 'ether')} {native_currency}, BACKEND={backend}, BACKEND_FEE_PERCENT={backend_fee_percent}%")
-
-        if not Web3.is_address(backend):
-            raise HTTPException(status_code=500, detail="Invalid BACKEND address in contract")
-
-    
-
-        tx_hash = await claim_tokens_no_code(w3, faucet_address, user_address)
-        print(f"Claimed tokens for {user_address}, tx: {tx_hash}")
-        return {"success": True, "txHash": tx_hash}
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        print(f"Server error for user {request.userAddress}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/secret-codes")
@@ -1647,6 +1703,30 @@ async def get_secret_code(request: GetSecretCodeRequest):
     except Exception as e:
         print(f"Error in get_secret_code: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve secret code: {str(e)}")
+
+
+@app.get("/whitelist-status/{faucet_address}/{user_address}")
+async def check_whitelist_status_endpoint(faucet_address: str, user_address: str, chain_id: int = 42220):
+    """Check if a user is whitelisted for a specific faucet."""
+    try:
+        if not Web3.is_address(faucet_address) or not Web3.is_address(user_address):
+            raise HTTPException(status_code=400, detail="Invalid address format")
+        
+        w3 = await get_web3_instance(chain_id)
+        faucet_checksum = w3.to_checksum_address(faucet_address)
+        user_checksum = w3.to_checksum_address(user_address)
+        
+        is_whitelisted = await check_whitelist_status(w3, faucet_checksum, user_checksum)
+        
+        return {
+            "faucetAddress": faucet_checksum,
+            "userAddress": user_checksum,
+            "isWhitelisted": is_whitelisted,
+            "chainId": chain_id
+        }
+    except Exception as e:
+        print(f"Error checking whitelist status: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
