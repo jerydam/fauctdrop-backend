@@ -1517,47 +1517,107 @@ async def claim(request: ClaimRequest):
             user_address = w3.to_checksum_address(request.userAddress)
             faucet_address = w3.to_checksum_address(request.faucetAddress)
         except ValueError as e:
+            print(f"❌ Invalid address error: {str(e)}")
             raise HTTPException(status_code=400, detail=f"Invalid address: {str(e)}")
         
         if request.chainId not in [1135, 42220, 42161]:
-            raise HTTPException(status_code=400, detail=f"Invalid chainId: {request.chainId}. Must be one of [1135, 42220, 42161]")
+            print(f"❌ Invalid chainId: {request.chainId}")
+            raise HTTPException(status_code=400, detail=f"Invalid chainId: {request.chainId}")
         
-        print(f"Converted to checksum addresses: user={user_address}, faucet={faucet_address}")
+        print(f"✅ Addresses validated: user={user_address}, faucet={faucet_address}")
 
+        # Check secret code FIRST
+        try:
+            is_valid_code = await verify_secret_code(faucet_address, request.secretCode)
+            if not is_valid_code:
+                print(f"❌ Secret code validation failed for code: {request.secretCode}")
+                raise HTTPException(status_code=400, detail=f"Invalid or expired secret code: {request.secretCode}")
+            print(f"✅ Secret code validated: {request.secretCode}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"❌ Secret code check error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Secret code validation error: {str(e)}")
+
+        # Check if faucet is paused
+        try:
+            is_paused = await check_pause_status(w3, faucet_address)
+            if is_paused:
+                print(f"❌ Faucet is paused: {faucet_address}")
+                raise HTTPException(status_code=400, detail="Faucet is currently paused")
+            print(f"✅ Faucet is active: {faucet_address}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"❌ Pause status check error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to check faucet status: {str(e)}")
+
+        # Get faucet details
         faucet_contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
         balance = w3.eth.get_balance(faucet_address)
         backend = faucet_contract.functions.BACKEND().call()
         backend_fee_percent = faucet_contract.functions.BACKEND_FEE_PERCENT().call()
         native_currency = "CELO" if request.chainId == 42220 else "LISK" if request.chainId == 1135 else "ETH"
-        print(f"Faucet details: balance={w3.from_wei(balance, 'ether')} {native_currency}, BACKEND={backend}, BACKEND_FEE_PERCENT={backend_fee_percent}%")
+        print(f"📊 Faucet details: balance={w3.from_wei(balance, 'ether')} {native_currency}, BACKEND={backend}, BACKEND_FEE_PERCENT={backend_fee_percent}%")
 
-        if not Web3.is_address(backend):
-            raise HTTPException(status_code=500, detail="Invalid BACKEND address in contract")
+        # Check if user already claimed
+        try:
+            has_claimed = faucet_contract.functions.hasClaimed(user_address).call()
+            if has_claimed:
+                print(f"❌ User already claimed: {user_address}")
+                raise HTTPException(status_code=400, detail="User has already claimed from this faucet")
+            print(f"✅ User has not claimed yet: {user_address}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"⚠️ Could not check claim status: {str(e)}")
 
+        # Whitelist user if requested
         whitelist_tx = None
         if request.shouldWhitelist:
             try:
+                print(f"🔄 Attempting to whitelist user: {user_address}")
                 whitelist_tx = await whitelist_user(w3, faucet_address, user_address)
-                print(f"Whitelisted user {user_address}, tx: {whitelist_tx}")
+                print(f"✅ Whitelisted user {user_address}, tx: {whitelist_tx}")
             except HTTPException as e:
-                raise e
+                print(f"❌ Whitelist failed: {str(e)}")
+                raise
             except Exception as e:
-                print(f"Failed to whitelist user {user_address}: {str(e)}")
+                print(f"❌ Whitelist error: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Failed to whitelist user: {str(e)}")
 
-        is_whitelisted = await check_whitelist_status(w3, faucet_address, user_address)
-        if not is_whitelisted:
-            raise HTTPException(status_code=403, detail="User is not whitelisted")
-        print(f"Confirmed user {user_address} is whitelisted")
+        # Verify whitelist status
+        try:
+            is_whitelisted = await check_whitelist_status(w3, faucet_address, user_address)
+            if not is_whitelisted:
+                print(f"❌ User not whitelisted after whitelist attempt: {user_address}")
+                raise HTTPException(status_code=400, detail="User is not whitelisted and whitelisting failed")
+            print(f"✅ Confirmed user is whitelisted: {user_address}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"❌ Whitelist status check error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to verify whitelist status: {str(e)}")
 
-        tx_hash = await claim_tokens(w3, faucet_address, user_address, request.secretCode)
-        print(f"Claimed tokens for {user_address}, tx: {tx_hash}")
-        return {"success": True, "txHash": tx_hash, "whitelistTx": whitelist_tx}
+        # Attempt to claim tokens
+        try:
+            print(f"🔄 Attempting to claim tokens for: {user_address}")
+            tx_hash = await claim_tokens(w3, faucet_address, user_address, request.secretCode)
+            print(f"✅ Successfully claimed tokens for {user_address}, tx: {tx_hash}")
+            return {"success": True, "txHash": tx_hash, "whitelistTx": whitelist_tx}
+        except HTTPException as e:
+            print(f"❌ Claim failed: {str(e)}")
+            raise
+        except Exception as e:
+            print(f"❌ Claim error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to claim tokens: {str(e)}")
+
     except HTTPException as e:
+        print(f"🚫 HTTP Exception for user {request.userAddress}: {e.detail}")
         raise e
     except Exception as e:
-        print(f"Server error for user {request.userAddress}: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
+        print(f"💥 Unexpected server error for user {request.userAddress}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 @app.post("/claim-no-code")
 async def claim_no_code(request: ClaimNoCodeRequest):
     """Endpoint to claim tokens without requiring a secret code."""
