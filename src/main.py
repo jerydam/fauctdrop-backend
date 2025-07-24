@@ -1572,39 +1572,12 @@ async def claim(request: ClaimRequest):
         except Exception as e:
             print(f"⚠️ Could not check claim status: {str(e)}")
 
-        # Whitelist user if requested
-        whitelist_tx = None
-        if request.shouldWhitelist:
-            try:
-                print(f"🔄 Attempting to whitelist user: {user_address}")
-                whitelist_tx = await whitelist_user(w3, faucet_address, user_address)
-                print(f"✅ Whitelisted user {user_address}, tx: {whitelist_tx}")
-            except HTTPException as e:
-                print(f"❌ Whitelist failed: {str(e)}")
-                raise
-            except Exception as e:
-                print(f"❌ Whitelist error: {str(e)}")
-                raise HTTPException(status_code=500, detail=f"Failed to whitelist user: {str(e)}")
-
-        # Verify whitelist status
-        try:
-            is_whitelisted = await check_whitelist_status(w3, faucet_address, user_address)
-            if not is_whitelisted:
-                print(f"❌ User not whitelisted after whitelist attempt: {user_address}")
-                raise HTTPException(status_code=400, detail="User is not whitelisted and whitelisting failed")
-            print(f"✅ Confirmed user is whitelisted: {user_address}")
-        except HTTPException:
-            raise
-        except Exception as e:
-            print(f"❌ Whitelist status check error: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to verify whitelist status: {str(e)}")
-
         # Attempt to claim tokens
         try:
             print(f"🔄 Attempting to claim tokens for: {user_address}")
             tx_hash = await claim_tokens(w3, faucet_address, user_address, request.secretCode)
             print(f"✅ Successfully claimed tokens for {user_address}, tx: {tx_hash}")
-            return {"success": True, "txHash": tx_hash, "whitelistTx": whitelist_tx}
+            return {"success": True, "txHash": tx_hash}
         except HTTPException as e:
             print(f"❌ Claim failed: {str(e)}")
             raise
