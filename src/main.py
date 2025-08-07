@@ -38,6 +38,10 @@ if not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_KEY"):
 # Initialize Supabase client
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
+# SYNCED CHAIN IDS - Must match frontend exactly
+# Frontend: [1, 42220, 44787, 62320, 1135, 4202, 8453, 84532, 421614, 137]
+VALID_CHAIN_IDS = [1, 42220, 44787, 62320, 1135, 4202, 8453, 84532, 421614, 137]
+
 # FAUCET_ABI (keeping the same ABI)
 FAUCET_ABI = [
 	{
@@ -1238,17 +1242,35 @@ class GetAdminPopupPreferenceRequest(BaseModel):
     userAddress: str
     faucetAddress: str
     
-    
-# SIMPLIFIED GAS CONFIGURATION - Just chain names for reference
+# UPDATED CHAIN CONFIGURATION - Now includes all supported chains
 CHAIN_INFO = {
+    # Ethereum
+    1: {"name": "Ethereum Mainnet", "native_token": "ETH"},
+    11155111: {"name": "Ethereum Sepolia", "native_token": "ETH"},
+    
+    # Celo
     42220: {"name": "Celo Mainnet", "native_token": "CELO"},
     44787: {"name": "Celo Testnet", "native_token": "CELO"},
+    
+    # Arbitrum - Now includes both mainnet and testnet
     42161: {"name": "Arbitrum One", "native_token": "ETH"},
-    421614: {"name": "Arbitrum Testnet", "native_token": "ETH"},
-    1135: {"name": "Lisk", "native_token": "LISK"},
-    4202: {"name": "Lisk Testnet", "native_token": "LISK"},
+    421614: {"name": "Arbitrum Sepolia", "native_token": "ETH"},  # Added this!
+    
+    # Base
     8453: {"name": "Base", "native_token": "ETH"},
     84532: {"name": "Base Testnet", "native_token": "ETH"},
+    
+    # Polygon
+    137: {"name": "Polygon Mainnet", "native_token": "MATIC"},
+    80001: {"name": "Polygon Mumbai", "native_token": "MATIC"},
+    80002: {"name": "Polygon Amoy", "native_token": "MATIC"},
+    
+    # Lisk
+    1135: {"name": "Lisk", "native_token": "LISK"},
+    4202: {"name": "Lisk Testnet", "native_token": "LISK"},
+    
+    # Custom/Other
+    62320: {"name": "Custom Network", "native_token": "ETH"},
 }
 
 def get_chain_info(chain_id: int) -> Dict:
@@ -2065,9 +2087,9 @@ async def set_claim_parameters_endpoint(request: SetClaimParametersRequest):
         if not Web3.is_address(request.faucetAddress):
             raise HTTPException(status_code=400, detail=f"Invalid faucetAddress: {request.faucetAddress}")
         
-        valid_chain_ids = [1135, 42220, 42161, 8453, 84532, 137, 44787, 1, 62320, 4202]
-        if request.chainId not in valid_chain_ids:
-            raise HTTPException(status_code=400, detail=f"Invalid chainId: {request.chainId}. Must be one of {valid_chain_ids}")
+        # Use synced chain IDs
+        if request.chainId not in VALID_CHAIN_IDS:
+            raise HTTPException(status_code=400, detail=f"Invalid chainId: {request.chainId}. Must be one of {VALID_CHAIN_IDS}")
         
         faucet_address = Web3.to_checksum_address(request.faucetAddress)
         
@@ -2094,10 +2116,10 @@ async def claim(request: ClaimRequest):
             print(f"❌ Invalid address error: {str(e)}")
             raise HTTPException(status_code=400, detail=f"Invalid address: {str(e)}")
         
-        valid_chain_ids = [1135, 42220, 42161, 8453, 84532, 137, 44787, 1, 62320, 4202]
-        if request.chainId not in valid_chain_ids:
+        # Use synced chain IDs
+        if request.chainId not in VALID_CHAIN_IDS:
             print(f"❌ Invalid chainId: {request.chainId}")
-            raise HTTPException(status_code=400, detail=f"Invalid chainId: {request.chainId}")
+            raise HTTPException(status_code=400, detail=f"Invalid chainId: {request.chainId}. Must be one of {VALID_CHAIN_IDS}")
         
         print(f"✅ Addresses validated: user={user_address}, faucet={faucet_address}")
 
@@ -2181,9 +2203,9 @@ async def claim_no_code(request: ClaimNoCodeRequest):
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"Invalid address: {str(e)}")
         
-        valid_chain_ids = [1135, 42220, 42161, 8453, 84532, 137, 44787, 1, 62320, 4202]
-        if request.chainId not in valid_chain_ids:
-            raise HTTPException(status_code=400, detail=f"Invalid chainId: {request.chainId}. Must be one of {valid_chain_ids}")
+        # Use synced chain IDs
+        if request.chainId not in VALID_CHAIN_IDS:
+            raise HTTPException(status_code=400, detail=f"Invalid chainId: {request.chainId}. Must be one of {VALID_CHAIN_IDS}")
         
         print(f"Converted to checksum addresses: user={user_address}, faucet={faucet_address}")
 
@@ -2221,10 +2243,10 @@ async def claim_custom(request: ClaimCustomRequest):
             print(f"❌ Invalid address error: {str(e)}")
             raise HTTPException(status_code=400, detail=f"Invalid address: {str(e)}")
         
-        valid_chain_ids = [1135, 42220, 42161, 8453, 84532, 137, 44787, 1, 62320, 4202]
-        if request.chainId not in valid_chain_ids:
+        # Use synced chain IDs
+        if request.chainId not in VALID_CHAIN_IDS:
             print(f"❌ Invalid chainId: {request.chainId}")
-            raise HTTPException(status_code=400, detail=f"Invalid chainId: {request.chainId}")
+            raise HTTPException(status_code=400, detail=f"Invalid chainId: {request.chainId}. Must be one of {VALID_CHAIN_IDS}")
         
         print(f"✅ Addresses validated: user={user_address}, faucet={faucet_address}")
 
@@ -2378,6 +2400,17 @@ async def get_secret_code(request: GetSecretCodeRequest):
     except Exception as e:
         print(f"Error in get_secret_code: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve secret code: {str(e)}")
+
+# Debug endpoint to check supported chains
+@app.get("/debug/supported-chains")
+async def get_supported_chains():
+    """Debug endpoint to see which chains are supported."""
+    return {
+        "success": True,
+        "valid_chain_ids": VALID_CHAIN_IDS,
+        "chain_info": CHAIN_INFO,
+        "total_supported": len(VALID_CHAIN_IDS)
+    }
 
 if __name__ == "__main__":
     import uvicorn

@@ -59,7 +59,19 @@ def get_rpc_url(chain_id: int) -> str:
         f"RPC_URL_{chain_id}",  # Most specific: RPC_URL_42220, RPC_URL_44787
         f"RPC_URL_{network_info.get(chain_id, {}).get('name', '').upper().replace(' ', '_')}",
     ]
-    
+    CHAIN_INFO = {
+    42220: {"name": "Celo Mainnet", "native_token": "CELO"},
+    44787: {"name": "Celo Testnet", "native_token": "CELO"},
+    42161: {"name": "Arbitrum One", "native_token": "ETH"},
+    421614: {"name": "Arbitrum Sepolia", "native_token": "ETH"},  # Added this!
+    1135: {"name": "Lisk", "native_token": "LISK"},
+    4202: {"name": "Lisk Testnet", "native_token": "LISK"},
+    8453: {"name": "Base", "native_token": "ETH"},
+    84532: {"name": "Base Testnet", "native_token": "ETH"},
+    1: {"name": "Ethereum Mainnet", "native_token": "ETH"},
+    137: {"name": "Polygon Mainnet", "native_token": "MATIC"},
+    62320: {"name": "Custom Network", "native_token": "ETH"}, 
+    }
     # Add legacy naming patterns for backward compatibility
     legacy_patterns = {
         42220: ["RPC_URL_CELO"],
