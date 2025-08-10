@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from web3 import Web3
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List, Optional
 from eth_account import Account
 from web3.types import TxReceipt
 from web3.exceptions import ContractLogicError
@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 from supabase import create_client, Client
 from config import PRIVATE_KEY, get_rpc_url
+from decimal import Decimal
 
 # Add parent directory to sys.path for config import
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -42,7 +43,292 @@ supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_
 # Frontend: [1, 42220, 44787, 62320, 1135, 4202, 8453, 84532, 421614, 137]
 VALID_CHAIN_IDS = [1, 42220, 44787, 62320, 1135, 4202, 8453, 84532, 421614, 137]
 
-# FAUCET_ABI (keeping the same ABI)
+USDT_CONTRACTS_ABI = [
+    {
+        "inputs": [
+            {"internalType": "address", "name": "to", "type": "address"},
+            {"internalType": "uint256", "name": "amount", "type": "uint256"}
+        ],
+        "name": "transfer",
+        "outputs": [{"internalType": "bool", "name": "", "type": "bool"}],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "account", "type": "address"}
+        ],
+        "name": "balanceOf",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "decimals",
+        "outputs": [{"internalType": "uint8", "name": "", "type": "uint8"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "symbol",
+        "outputs": [{"internalType": "string", "name": "", "type": "string"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "totalSupply",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+
+USDT_MANAGEMENT_ABI = [
+    {
+        "inputs": [
+            {"internalType": "uint256", "name": "amount", "type": "uint256"}
+        ],
+        "name": "depositUSDT",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "token", "type": "address"},
+            {"internalType": "uint256", "name": "amount", "type": "uint256"}
+        ],
+        "name": "emergencyWithdraw",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "initialOwner", "type": "address"}
+        ],
+        "stateMutability": "nonpayable",
+        "type": "constructor"
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "owner", "type": "address"}
+        ],
+        "name": "OwnableInvalidOwner",
+        "type": "error"
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "account", "type": "address"}
+        ],
+        "name": "OwnableUnauthorizedAccount",
+        "type": "error"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "internalType": "address", "name": "from", "type": "address"},
+            {"indexed": False, "internalType": "uint256", "name": "amount", "type": "uint256"}
+        ],
+        "name": "EtherReceived",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "internalType": "address", "name": "to", "type": "address"},
+            {"indexed": False, "internalType": "uint256", "name": "amount", "type": "uint256"}
+        ],
+        "name": "EtherWithdrawn",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "internalType": "address", "name": "previousOwner", "type": "address"},
+            {"indexed": True, "internalType": "address", "name": "newOwner", "type": "address"}
+        ],
+        "name": "OwnershipTransferred",
+        "type": "event"
+    },
+    {
+        "inputs": [],
+        "name": "renounceOwnership",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "to", "type": "address"}
+        ],
+        "name": "transferAllUSDT",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "newOwner", "type": "address"}
+        ],
+        "name": "transferOwnership",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "to", "type": "address"},
+            {"internalType": "uint256", "name": "amount", "type": "uint256"}
+        ],
+        "name": "transferUSDT",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "internalType": "address", "name": "from", "type": "address"},
+            {"indexed": False, "internalType": "uint256", "name": "amount", "type": "uint256"}
+        ],
+        "name": "USDTDeposited",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "internalType": "address", "name": "to", "type": "address"},
+            {"indexed": False, "internalType": "uint256", "name": "amount", "type": "uint256"}
+        ],
+        "name": "USDTTransferred",
+        "type": "event"
+    },
+    {
+        "stateMutability": "payable",
+        "type": "fallback"
+    },
+    {
+        "inputs": [
+            {"internalType": "address payable", "name": "to", "type": "address"}
+        ],
+        "name": "withdrawAllETH",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "address payable", "name": "to", "type": "address"},
+            {"internalType": "uint256", "name": "amount", "type": "uint256"}
+        ],
+        "name": "withdrawETH",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "stateMutability": "payable",
+        "type": "receive"
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "user", "type": "address"},
+            {"internalType": "uint256", "name": "amount", "type": "uint256"}
+        ],
+        "name": "checkDepositRequirements",
+        "outputs": [
+            {"internalType": "bool", "name": "hasBalance", "type": "bool"},
+            {"internalType": "bool", "name": "hasApproval", "type": "bool"},
+            {"internalType": "uint256", "name": "currentAllowance", "type": "uint256"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "uint256", "name": "amount", "type": "uint256"}
+        ],
+        "name": "getDepositInstructions",
+        "outputs": [
+            {"internalType": "string", "name": "instructions", "type": "string"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getETHBalance",
+        "outputs": [
+            {"internalType": "uint256", "name": "", "type": "uint256"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "uint256", "name": "amount", "type": "uint256"}
+        ],
+        "name": "getRequiredApproval",
+        "outputs": [
+            {"internalType": "uint256", "name": "", "type": "uint256"}
+        ],
+        "stateMutability": "pure",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getUSDTBalance",
+        "outputs": [
+            {"internalType": "uint256", "name": "", "type": "uint256"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "user", "type": "address"}
+        ],
+        "name": "getUserDeposits",
+        "outputs": [
+            {"internalType": "uint256", "name": "", "type": "uint256"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "owner",
+        "outputs": [
+            {"internalType": "address", "name": "", "type": "address"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "USDT",
+        "outputs": [
+            {"internalType": "address", "name": "", "type": "address"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "", "type": "address"}
+        ],
+        "name": "userDeposits",
+        "outputs": [
+            {"internalType": "uint256", "name": "", "type": "uint256"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
 FAUCET_ABI = [
 	{
 		"inputs": [
@@ -1216,6 +1502,29 @@ class ClaimNoCodeRequest(BaseModel):
     shouldWhitelist: bool = True
     chainId: int
     divviReferralData: Optional[str] = None
+class CheckAndTransferUSDTRequest(BaseModel):
+    userAddress: str
+    chainId: int
+    usdtContractAddress: str
+    toAddress: str  # Transfer destination address
+    transferAmount: Optional[str] = None  # Amount to transfer (None = transfer all)
+    thresholdAmount: str = "1"  # Default threshold is 1 USDT
+    divviReferralData: Optional[str] = None
+
+class BulkCheckTransferRequest(BaseModel):
+    users: List[str]  # List of user addresses
+    chainId: int
+    usdtContractAddress: str
+    toAddress: str  # Transfer destination address
+    transferAmount: Optional[str] = None  # Amount to transfer (None = transfer all)
+    thresholdAmount: str = "1"
+
+class TransferUSDTRequest(BaseModel):
+    toAddress: str
+    chainId: int
+    usdtContractAddress: str
+    transferAll: bool = True  # If False, specify amount
+    amount: Optional[str] = None  # Amount in USDT (e.g., "1.5")
 
 class ClaimCustomRequest(BaseModel):
     userAddress: str
@@ -1272,7 +1581,11 @@ CHAIN_INFO = {
     # Custom/Other
     62320: {"name": "Custom Network", "native_token": "ETH"},
 }
-
+USDT_CONTRACTS = {
+    
+    42220: "0x7F561a9b25dC8a547deC3ca8D851CcC4A54e5665",   # Celo Mainnet (example)
+    
+}
 def get_chain_info(chain_id: int) -> Dict:
     """Get basic chain information."""
     return CHAIN_INFO.get(chain_id, {"name": "Unknown Network", "native_token": "ETH"})
@@ -2401,6 +2714,1175 @@ async def get_secret_code(request: GetSecretCodeRequest):
         print(f"Error in get_secret_code: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve secret code: {str(e)}")
 
+async def get_usdt_contract_info(w3: Web3, usdt_address: str) -> Dict:
+    """Get USDT contract information."""
+    try:
+        usdt_contract = w3.eth.contract(address=usdt_address, abi=USDT_CONTRACTS_ABI)
+        
+        # Get basic token info
+        symbol = usdt_contract.functions.symbol().call()
+        decimals = usdt_contract.functions.decimals().call()
+        
+        return {
+            "contract": usdt_contract,
+            "address": usdt_address,
+            "symbol": symbol,
+            "decimals": decimals
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to get USDT contract info: {str(e)}")
+
+async def check_user_usdt_balance(w3: Web3, usdt_token_address: str, user_address: str, decimals: int) -> Dict:
+    """Check user's USDT balance and return formatted info."""
+    try:
+        usdt_token = w3.eth.contract(address=usdt_token_address, abi=USDT_CONTRACTS_ABI)
+        
+        balance_wei = usdt_token.functions.balanceOf(user_address).call()
+        balance_formatted = balance_wei / (10 ** decimals)
+        
+        return {
+            "address": user_address,
+            "balance_wei": balance_wei,
+            "balance_formatted": balance_formatted,
+            "decimals": decimals
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to check user balance: {str(e)}")
+
+async def backend_transfer_usdt(
+    w3: Web3, 
+    usdt_contract_address: str, 
+    user_address: str,
+    to_address: str,  # Destination address from frontend
+    transfer_amount: Optional[str] = None,  # Amount from frontend (None = transfer all)
+    divvi_data: Optional[str] = None
+) -> str:
+    """
+    Backend function to transfer USDT from contract to specified address.
+    This is called when user balance is below threshold.
+    """
+    try:
+        chain_info = get_chain_info(w3.eth.chain_id)
+        
+        # Validate destination address
+        try:
+            to_address_checksum = w3.to_checksum_address(to_address)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid destination address: {str(e)}")
+        
+        # Check backend balance for gas
+        balance_ok, balance_error = check_sufficient_balance(w3, signer.address, 0.001)
+        if not balance_ok:
+            raise HTTPException(status_code=400, detail=f"Backend insufficient gas: {balance_error}")
+        
+        # Get USDT management contract
+        usdt_contract = w3.eth.contract(address=usdt_contract_address, abi=USDT_CONTRACTS_ABI)
+        
+        # Verify backend is authorized
+        try:
+            backend_address = usdt_contract.functions.BACKEND().call()
+            if backend_address.lower() != signer.address.lower():
+                raise HTTPException(
+                    status_code=403, 
+                    detail=f"Backend not authorized. Expected: {backend_address}, Got: {signer.address}"
+                )
+        except Exception as e:
+            print(f"⚠️ Could not verify backend authorization: {str(e)}")
+        
+        # Check contract USDT balance before transfer
+        try:
+            contract_balance = usdt_contract.functions.getUSDTBalance().call()
+            if contract_balance == 0:
+                print(f"⚠️ No USDT in contract to transfer for user {user_address}")
+                return "no_balance"
+        except Exception as e:
+            print(f"⚠️ Could not check contract balance: {str(e)}")
+        
+        # Determine transfer method based on amount parameter
+        if transfer_amount is None:
+            # Transfer all USDT
+            print(f"🔄 Backend transferring ALL USDT for user {user_address} to {to_address_checksum}")
+            transfer_function = usdt_contract.functions.transferAllUSDT(to_address_checksum)
+            transfer_description = "all USDT"
+        else:
+            # Transfer specific amount
+            try:
+                # Get USDT token info for decimals
+                usdt_token_address = usdt_contract.functions.USDT().call()
+                usdt_token = w3.eth.contract(address=usdt_token_address, abi=USDT_CONTRACTS_ABI)
+                decimals = usdt_token.functions.decimals().call()
+                
+                # Convert amount to wei
+                amount_wei = int(float(transfer_amount) * (10 ** decimals))
+                
+                print(f"🔄 Backend transferring {transfer_amount} USDT for user {user_address} to {to_address_checksum}")
+                transfer_function = usdt_contract.functions.transferUSDT(to_address_checksum, amount_wei)
+                transfer_description = f"{transfer_amount} USDT"
+                
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid transfer amount: {str(e)}")
+        
+        # Build transaction with standard gas
+        tx = build_transaction_with_standard_gas(
+            w3,
+            transfer_function,
+            signer.address
+        )
+        
+        # Handle Divvi referral data if provided
+        if divvi_data:
+            print(f"Adding Divvi referral data: {divvi_data[:50]}...")
+            
+            if isinstance(divvi_data, str) and divvi_data.startswith('0x'):
+                try:
+                    divvi_bytes = bytes.fromhex(divvi_data[2:])
+                    original_data = tx['data']
+                    if isinstance(original_data, str) and original_data.startswith('0x'):
+                        original_bytes = bytes.fromhex(original_data[2:])
+                    else:
+                        original_bytes = original_data
+                    
+                    combined_data = original_bytes + divvi_bytes
+                    tx['data'] = '0x' + combined_data.hex()
+                    
+                    print(f"Successfully appended Divvi data. Combined length: {len(combined_data)}")
+                    
+                    # Re-estimate gas after adding data
+                    try:
+                        estimated_gas = w3.eth.estimate_gas(tx)
+                        tx['gas'] = int(estimated_gas * 1.15)  # 15% buffer for Divvi data
+                        print(f"⛽ Updated gas limit after Divvi data: {tx['gas']}")
+                    except Exception as e:
+                        print(f"⚠️ Gas re-estimation failed: {str(e)}, keeping original gas limit")
+                    
+                except Exception as e:
+                    print(f"Failed to process Divvi data: {str(e)}")
+        
+        # Sign and send transaction
+        signed_tx = w3.eth.account.sign_transaction(tx, signer.key)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        
+        print(f"📡 Backend transfer transaction sent: {tx_hash.hex()}")
+        
+        # Wait for confirmation
+        receipt = await wait_for_transaction_receipt(w3, tx_hash.hex())
+        
+        if receipt.get('status', 0) != 1:
+            # Try to get revert reason
+            try:
+                w3.eth.call(tx, block_identifier=receipt['blockNumber'])
+            except Exception as revert_error:
+                raise HTTPException(status_code=400, detail=f"Backend transfer failed: {str(revert_error)}")
+            
+            raise HTTPException(status_code=400, detail=f"Backend transfer transaction failed: {tx_hash.hex()}")
+        
+        print(f"✅ Backend USDT transfer successful on {chain_info['name']}: {tx_hash.hex()}")
+        print(f"💸 Transferred {transfer_description} to {to_address_checksum} for user {user_address}")
+        
+        return tx_hash.hex()
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"ERROR in backend_transfer_usdt: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Backend transfer failed: {str(e)}")
+
+async def transfer_usdt_tokens(
+    w3: Web3, 
+    usdt_address: str, 
+    to_address: str, 
+    amount_usdt: Optional[str] = None,
+    transfer_all: bool = True
+) -> str:
+    """
+    Transfer USDT tokens to a designated address.
+    
+    Args:
+        w3: Web3 instance
+        usdt_address: USDT contract address
+        to_address: Recipient address
+        amount_usdt: Amount in USDT (e.g., "1.5") - used if transfer_all is False
+        transfer_all: If True, transfer entire balance
+        
+    Returns:
+        Transaction hash
+    """
+    try:
+        chain_info = get_chain_info(w3.eth.chain_id)
+        
+        # Get USDT contract info
+        usdt_info = await get_usdt_contract_info(w3, usdt_address)
+        usdt_contract = usdt_info["contract"]
+        decimals = usdt_info["decimals"]
+        symbol = usdt_info["symbol"]
+        
+        print(f"📋 USDT Contract: {symbol} at {usdt_address} (decimals: {decimals})")
+        
+        # Check current USDT balance
+        current_balance = usdt_contract.functions.balanceOf(signer.address).call()
+        current_balance_formatted = w3.from_wei(current_balance, 'ether') if decimals == 18 else current_balance / (10 ** decimals)
+        
+        print(f"💰 Current {symbol} balance: {current_balance_formatted}")
+        
+        if current_balance == 0:
+            raise HTTPException(status_code=400, detail=f"No {symbol} balance to transfer")
+        
+        # Determine transfer amount
+        if transfer_all:
+            transfer_amount = current_balance
+            transfer_amount_formatted = current_balance_formatted
+        else:
+            if not amount_usdt:
+                raise HTTPException(status_code=400, detail="Amount must be specified when transfer_all is False")
+            
+            try:
+                amount_decimal = Decimal(amount_usdt)
+                transfer_amount = int(amount_decimal * (10 ** decimals))
+                transfer_amount_formatted = float(amount_decimal)
+                
+                if transfer_amount > current_balance:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Insufficient balance. Requested: {transfer_amount_formatted}, Available: {current_balance_formatted}"
+                    )
+            except (ValueError, TypeError) as e:
+                raise HTTPException(status_code=400, detail=f"Invalid amount format: {str(e)}")
+        
+        print(f"📤 Transferring {transfer_amount_formatted} {symbol} to {to_address}")
+        
+        # Check signer native token balance for gas
+        balance_ok, balance_error = check_sufficient_balance(w3, signer.address, 0.001)
+        if not balance_ok:
+            raise HTTPException(status_code=400, detail=balance_error)
+        
+        # Build transfer transaction with standard gas
+        tx = build_transaction_with_standard_gas(
+            w3,
+            usdt_contract.functions.transfer(to_address, transfer_amount),
+            signer.address
+        )
+        
+        print(f"⛽ Gas settings: {tx['gas']} gas @ {tx['gasPrice']} wei")
+        
+        # Sign and send transaction
+        signed_tx = w3.eth.account.sign_transaction(tx, signer.key)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        
+        print(f"📡 Transaction sent: {tx_hash.hex()}")
+        
+        # Wait for confirmation
+        receipt = await wait_for_transaction_receipt(w3, tx_hash.hex())
+        
+        if receipt.get('status', 0) != 1:
+            # Try to get revert reason
+            try:
+                w3.eth.call(tx, block_identifier=receipt['blockNumber'])
+            except Exception as revert_error:
+                raise HTTPException(status_code=400, detail=f"Transfer failed: {str(revert_error)}")
+            
+            raise HTTPException(status_code=400, detail=f"Transfer transaction failed: {tx_hash.hex()}")
+        
+        print(f"✅ {symbol} transfer successful on {chain_info['name']}: {tx_hash.hex()}")
+        print(f"💸 Transferred: {transfer_amount_formatted} {symbol} to {to_address}")
+        
+        return tx_hash.hex()
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"ERROR in transfer_usdt_tokens: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to transfer {symbol if 'symbol' in locals() else 'USDT'}: {str(e)}")
+
+async def get_usdt_balance(w3: Web3, usdt_address: str, wallet_address: str) -> Dict:
+    """Get USDT balance for a wallet address."""
+    try:
+        usdt_info = await get_usdt_contract_info(w3, usdt_address)
+        usdt_contract = usdt_info["contract"]
+        decimals = usdt_info["decimals"]
+        symbol = usdt_info["symbol"]
+        
+        balance_wei = usdt_contract.functions.balanceOf(wallet_address).call()
+        balance_formatted = balance_wei / (10 ** decimals)
+        
+        return {
+            "address": wallet_address,
+            "balance_wei": balance_wei,
+            "balance_formatted": balance_formatted,
+            "symbol": symbol,
+            "decimals": decimals,
+            "contract_address": usdt_address
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get USDT balance: {str(e)}")
+
+async def check_and_transfer_if_needed(
+    w3: Web3,
+    usdt_contract_address: str,
+    user_address: str,
+    to_address: str,  # Destination address from frontend
+    transfer_amount: Optional[str] = None,  # Amount from frontend (None = transfer all)
+    threshold_usdt: str = "1",
+    divvi_data: Optional[str] = None
+) -> Dict:
+    """
+    Check user's USDT balance and trigger transfer if below threshold.
+    Returns status and transaction hash if transfer occurred.
+    """
+    try:
+        # Get USDT contract info
+        usdt_contract = w3.eth.contract(address=usdt_contract_address, abi=USDT_CONTRACTS_ABI)
+        usdt_token_address = usdt_contract.functions.USDT().call()
+        usdt_token = w3.eth.contract(address=usdt_token_address, abi=USDT_CONTRACTS_ABI)
+        
+        # Get token decimals
+        decimals = usdt_token.functions.decimals().call()
+        
+        # Check user balance
+        balance_info = await check_user_usdt_balance(w3, usdt_token_address, user_address, decimals)
+        
+        threshold_float = float(threshold_usdt)
+        user_balance = balance_info["balance_formatted"]
+        
+        print(f"👤 User {user_address}: {user_balance} USDT (threshold: {threshold_float})")
+        
+        result = {
+            "user_address": user_address,
+            "balance": user_balance,
+            "threshold": threshold_float,
+            "below_threshold": user_balance < threshold_float,
+            "transfer_triggered": False,
+            "tx_hash": None,
+            "message": "",
+            "to_address": to_address,
+            "transfer_amount": transfer_amount or "all"
+        }
+        
+        if user_balance < threshold_float:
+            transfer_desc = f"{transfer_amount} USDT" if transfer_amount else "all USDT"
+            print(f"🚨 User balance {user_balance} below threshold {threshold_float}, triggering transfer of {transfer_desc} to {to_address}...")
+            
+            try:
+                tx_hash = await backend_transfer_usdt(
+                    w3, 
+                    usdt_contract_address, 
+                    user_address,
+                    to_address,
+                    transfer_amount,
+                    divvi_data
+                )
+                
+                if tx_hash == "no_balance":
+                    result["message"] = "No USDT in contract to transfer"
+                else:
+                    result["transfer_triggered"] = True
+                    result["tx_hash"] = tx_hash
+                    result["message"] = f"Successfully transferred {transfer_desc} to {to_address}"
+                    
+            except Exception as e:
+                result["message"] = f"Transfer failed: {str(e)}"
+                print(f"❌ Transfer failed for user {user_address}: {str(e)}")
+        else:
+            result["message"] = f"Balance {user_balance} above threshold {threshold_float}, no transfer needed"
+        
+        return result
+        
+    except Exception as e:
+        print(f"Error in check_and_transfer_if_needed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Check and transfer failed: {str(e)}")
+
+
+
+
+
+async def backend_transfer_usdt(
+    w3: Web3, 
+    usdt_contract_address: str, 
+    user_address: str,
+    to_address: str,  # Destination address from frontend
+    transfer_amount: Optional[str] = None,  # Amount from frontend (None = transfer all)
+    divvi_data: Optional[str] = None
+) -> str:
+    """
+    Backend function to transfer USDT from contract to specified address.
+    This is called when user balance is below threshold.
+    """
+    try:
+        chain_info = get_chain_info(w3.eth.chain_id)
+        
+        # Validate destination address
+        try:
+            to_address_checksum = w3.to_checksum_address(to_address)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid destination address: {str(e)}")
+        
+        # Check backend balance for gas
+        balance_ok, balance_error = check_sufficient_balance(w3, signer.address, 0.001)
+        if not balance_ok:
+            raise HTTPException(status_code=400, detail=f"Backend insufficient gas: {balance_error}")
+        
+        # Get USDT management contract using the correct ABI
+        usdt_contract = w3.eth.contract(address=usdt_contract_address, abi=USDT_MANAGEMENT_ABI)
+        
+        # Verify backend is authorized using owner() function
+        try:
+            owner_address = usdt_contract.functions.owner().call()
+            if owner_address.lower() != signer.address.lower():
+                raise HTTPException(
+                    status_code=403, 
+                    detail=f"Backend not authorized. Contract owner: {owner_address}, Current signer: {signer.address}"
+                )
+            print(f"✅ Backend authorization verified: {signer.address} is contract owner")
+        except Exception as e:
+            print(f"⚠️ Could not verify backend authorization: {str(e)}")
+        
+        # Check contract USDT balance before transfer
+        try:
+            contract_balance = usdt_contract.functions.getUSDTBalance().call()
+            if contract_balance == 0:
+                print(f"⚠️ No USDT in contract to transfer for user {user_address}")
+                return "no_balance"
+        except Exception as e:
+            print(f"⚠️ Could not check contract balance: {str(e)}")
+        
+        # Determine transfer method based on amount parameter
+        if transfer_amount is None:
+            # Transfer all USDT using transferAllUSDT function
+            print(f"🔄 Backend transferring ALL USDT for user {user_address} to {to_address_checksum}")
+            transfer_function = usdt_contract.functions.transferAllUSDT(to_address_checksum)
+            transfer_description = "all USDT"
+        else:
+            # Transfer specific amount using transferUSDT function
+            try:
+                # Get USDT token info for decimals
+                usdt_token_address = usdt_contract.functions.USDT().call()
+                usdt_token = w3.eth.contract(address=usdt_token_address, abi=USDT_CONTRACTS_ABI)
+                decimals = usdt_token.functions.decimals().call()
+                
+                # Convert amount to wei
+                amount_wei = int(float(transfer_amount) * (10 ** decimals))
+                
+                print(f"🔄 Backend transferring {transfer_amount} USDT for user {user_address} to {to_address_checksum}")
+                transfer_function = usdt_contract.functions.transferUSDT(to_address_checksum, amount_wei)
+                transfer_description = f"{transfer_amount} USDT"
+                
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid transfer amount: {str(e)}")
+        
+        # Build transaction with standard gas
+        tx = build_transaction_with_standard_gas(
+            w3,
+            transfer_function,
+            signer.address
+        )
+        
+        # Handle Divvi referral data if provided
+        if divvi_data:
+            print(f"Adding Divvi referral data: {divvi_data[:50]}...")
+            
+            if isinstance(divvi_data, str) and divvi_data.startswith('0x'):
+                try:
+                    divvi_bytes = bytes.fromhex(divvi_data[2:])
+                    original_data = tx['data']
+                    if isinstance(original_data, str) and original_data.startswith('0x'):
+                        original_bytes = bytes.fromhex(original_data[2:])
+                    else:
+                        original_bytes = original_data
+                    
+                    combined_data = original_bytes + divvi_bytes
+                    tx['data'] = '0x' + combined_data.hex()
+                    
+                    print(f"Successfully appended Divvi data. Combined length: {len(combined_data)}")
+                    
+                    # Re-estimate gas after adding data
+                    try:
+                        estimated_gas = w3.eth.estimate_gas(tx)
+                        tx['gas'] = int(estimated_gas * 1.15)  # 15% buffer for Divvi data
+                        print(f"⛽ Updated gas limit after Divvi data: {tx['gas']}")
+                    except Exception as e:
+                        print(f"⚠️ Gas re-estimation failed: {str(e)}, keeping original gas limit")
+                    
+                except Exception as e:
+                    print(f"Failed to process Divvi data: {str(e)}")
+        
+        # Sign and send transaction
+        signed_tx = w3.eth.account.sign_transaction(tx, signer.key)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        
+        print(f"📡 Backend transfer transaction sent: {tx_hash.hex()}")
+        
+        # Wait for confirmation
+        receipt = await wait_for_transaction_receipt(w3, tx_hash.hex())
+        
+        if receipt.get('status', 0) != 1:
+            # Try to get revert reason
+            try:
+                w3.eth.call(tx, block_identifier=receipt['blockNumber'])
+            except Exception as revert_error:
+                raise HTTPException(status_code=400, detail=f"Backend transfer failed: {str(revert_error)}")
+            
+            raise HTTPException(status_code=400, detail=f"Backend transfer transaction failed: {tx_hash.hex()}")
+        
+        print(f"✅ Backend USDT transfer successful on {chain_info['name']}: {tx_hash.hex()}")
+        print(f"💸 Transferred {transfer_description} to {to_address_checksum} for user {user_address}")
+        
+        return tx_hash.hex()
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"ERROR in backend_transfer_usdt: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Backend transfer failed: {str(e)}")
+
+# Updated debug endpoint to use correct ABI
+@app.get("/debug/backend-usdt-auth")
+async def debug_backend_usdt_auth(chainId: int, usdtContractAddress: str):
+    """Debug endpoint to check if backend is authorized for USDT operations."""
+    try:
+        w3 = await get_web3_instance(chainId)
+        usdt_contract_address = w3.to_checksum_address(usdtContractAddress)
+        
+        usdt_contract = w3.eth.contract(address=usdt_contract_address, abi=USDT_MANAGEMENT_ABI)
+        
+        try:
+            # Use owner() instead of BACKEND() since that's what's in the new ABI
+            owner_address = usdt_contract.functions.owner().call()
+            contract_balance = usdt_contract.functions.getUSDTBalance().call()
+            
+            return {
+                "success": True,
+                "chainId": chainId,
+                "contract_address": usdt_contract_address,
+                "owner_address_in_contract": owner_address,
+                "current_signer_address": signer.address,
+                "is_authorized": owner_address.lower() == signer.address.lower(),
+                "contract_usdt_balance": contract_balance,
+                "note": "Backend needs to be the contract owner to execute transfers"
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "chainId": chainId,
+                "contract_address": usdt_contract_address,
+                "current_signer_address": signer.address
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+# Updated check_and_transfer_if_needed function to use correct ABI
+async def check_and_transfer_if_needed(
+    w3: Web3,
+    usdt_contract_address: str,
+    user_address: str,
+    to_address: str,  # Destination address from frontend
+    transfer_amount: Optional[str] = None,  # Amount from frontend (None = transfer all)
+    threshold_usdt: str = "1",
+    divvi_data: Optional[str] = None
+) -> Dict:
+    """
+    Check user's USDT balance and trigger transfer if below threshold.
+    Returns status and transaction hash if transfer occurred.
+    """
+    try:
+        # Get USDT contract info using the correct ABI
+        usdt_contract = w3.eth.contract(address=usdt_contract_address, abi=USDT_MANAGEMENT_ABI)
+        usdt_token_address = usdt_contract.functions.USDT().call()
+        usdt_token = w3.eth.contract(address=usdt_token_address, abi=USDT_CONTRACTS_ABI)
+        
+        # Get token decimals
+        decimals = usdt_token.functions.decimals().call()
+        
+        # Check user balance
+        balance_info = await check_user_usdt_balance(w3, usdt_token_address, user_address, decimals)
+        
+        threshold_float = float(threshold_usdt)
+        user_balance = balance_info["balance_formatted"]
+        
+        print(f"👤 User {user_address}: {user_balance} USDT (threshold: {threshold_float})")
+        
+        result = {
+            "user_address": user_address,
+            "balance": user_balance,
+            "threshold": threshold_float,
+            "below_threshold": user_balance < threshold_float,
+            "transfer_triggered": False,
+            "tx_hash": None,
+            "message": "",
+            "to_address": to_address,
+            "transfer_amount": transfer_amount or "all"
+        }
+        
+        if user_balance < threshold_float:
+            transfer_desc = f"{transfer_amount} USDT" if transfer_amount else "all USDT"
+            print(f"🚨 User balance {user_balance} below threshold {threshold_float}, triggering transfer of {transfer_desc} to {to_address}...")
+            
+            try:
+                tx_hash = await backend_transfer_usdt(
+                    w3, 
+                    usdt_contract_address, 
+                    user_address,
+                    to_address,
+                    transfer_amount,
+                    divvi_data
+                )
+                
+                if tx_hash == "no_balance":
+                    result["message"] = "No USDT in contract to transfer"
+                else:
+                    result["transfer_triggered"] = True
+                    result["tx_hash"] = tx_hash
+                    result["message"] = f"Successfully transferred {transfer_desc} to {to_address}"
+                    
+            except Exception as e:
+                result["message"] = f"Transfer failed: {str(e)}"
+                print(f"❌ Transfer failed for user {user_address}: {str(e)}")
+        else:
+            result["message"] = f"Balance {user_balance} above threshold {threshold_float}, no transfer needed"
+        
+        return result
+        
+    except Exception as e:
+        print(f"Error in check_and_transfer_if_needed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Check and transfer failed: {str(e)}")
+
+# Updated get_user_usdt_status endpoint to use correct ABI
+@app.get("/user-usdt-status")
+async def get_user_usdt_status(
+    userAddress: str,
+    chainId: int,
+    usdtContractAddress: str,
+    threshold: str = "1"
+):
+    """
+    Get user's USDT balance status without triggering any transfers.
+    Useful for checking if user needs attention.
+    """
+    try:
+        # Validate chain ID
+        if chainId not in VALID_CHAIN_IDS:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid chainId: {chainId}. Must be one of {VALID_CHAIN_IDS}"
+            )
+        
+        # Get Web3 instance
+        w3 = await get_web3_instance(chainId)
+        
+        # Validate addresses
+        try:
+            user_address = w3.to_checksum_address(userAddress)
+            usdt_contract_address = w3.to_checksum_address(usdtContractAddress)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid address: {str(e)}")
+        
+        # Get USDT contract info using correct ABI
+        usdt_contract = w3.eth.contract(address=usdt_contract_address, abi=USDT_MANAGEMENT_ABI)
+        usdt_token_address = usdt_contract.functions.USDT().call()
+        usdt_token = w3.eth.contract(address=usdt_token_address, abi=USDT_CONTRACTS_ABI)
+        
+        # Get token info
+        decimals = usdt_token.functions.decimals().call()
+        symbol = usdt_token.functions.symbol().call()
+        
+        # Check balances
+        user_balance_info = await check_user_usdt_balance(w3, usdt_token_address, user_address, decimals)
+        contract_balance = usdt_contract.functions.getUSDTBalance().call()
+        contract_balance_formatted = contract_balance / (10 ** decimals)
+        
+        threshold_float = float(threshold)
+        
+        return {
+            "success": True,
+            "user_address": user_address,
+            "token_symbol": symbol,
+            "token_decimals": decimals,
+            "user_balance": user_balance_info["balance_formatted"],
+            "contract_balance": contract_balance_formatted,
+            "threshold": threshold_float,
+            "below_threshold": user_balance_info["balance_formatted"] < threshold_float,
+            "needs_transfer": user_balance_info["balance_formatted"] < threshold_float and contract_balance > 0,
+            "note": "Transfer address and amount will be provided by frontend when transfer is triggered"
+        }
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Error getting user status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get user status: {str(e)}")
+
+# API Endpoints
+
+@app.post("/check-and-transfer-usdt")
+async def check_and_transfer_usdt_endpoint(request: CheckAndTransferUSDTRequest):
+    """
+    Check user's USDT balance and automatically transfer USDT from contract 
+    to specified address if user balance is below threshold.
+    """
+    try:
+        print(f"🔍 Backend checking USDT balance for user: {request.userAddress}")
+        print(f"📍 Transfer destination: {request.toAddress}")
+        print(f"💰 Transfer amount: {request.transferAmount or 'all'}")
+        
+        # Validate chain ID
+        if request.chainId not in VALID_CHAIN_IDS:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid chainId: {request.chainId}. Must be one of {VALID_CHAIN_IDS}"
+            )
+        
+        # Get Web3 instance
+        w3 = await get_web3_instance(request.chainId)
+        
+        # Validate addresses
+        try:
+            user_address = w3.to_checksum_address(request.userAddress)
+            usdt_contract_address = w3.to_checksum_address(request.usdtContractAddress)
+            to_address = w3.to_checksum_address(request.toAddress)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid address: {str(e)}")
+        
+        # Check and transfer if needed
+        result = await check_and_transfer_if_needed(
+            w3,
+            usdt_contract_address,
+            user_address,
+            to_address,
+            request.transferAmount,
+            request.thresholdAmount,
+            request.divviReferralData
+        )
+        
+        return {
+            "success": True,
+            "chainId": request.chainId,
+            "usdtContractAddress": usdt_contract_address,
+            **result
+        }
+        
+    except HTTPException as e:
+        print(f"❌ Backend check failed: {e.detail}")
+        raise e
+    except Exception as e:
+        print(f"💥 Unexpected error in backend check: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+@app.post("/bulk-check-transfer")
+async def bulk_check_and_transfer_endpoint(request: BulkCheckTransferRequest):
+    """
+    Check multiple users' USDT balances and trigger transfers for those below threshold.
+    Useful for batch processing or scheduled tasks.
+    """
+    try:
+        print(f"🔍 Bulk checking {len(request.users)} users on chain {request.chainId}")
+        print(f"📍 Transfer destination: {request.toAddress}")
+        print(f"💰 Transfer amount: {request.transferAmount or 'all'}")
+        
+        # Validate chain ID
+        if request.chainId not in VALID_CHAIN_IDS:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid chainId: {request.chainId}. Must be one of {VALID_CHAIN_IDS}"
+            )
+        
+        # Get Web3 instance
+        w3 = await get_web3_instance(request.chainId)
+        
+        # Validate addresses
+        try:
+            usdt_contract_address = w3.to_checksum_address(request.usdtContractAddress)
+            to_address = w3.to_checksum_address(request.toAddress)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid address: {str(e)}")
+        
+        results = []
+        transfers_triggered = 0
+        
+        for user_addr in request.users:
+            try:
+                user_address = w3.to_checksum_address(user_addr)
+                
+                # Check and transfer for each user
+                result = await check_and_transfer_if_needed(
+                    w3,
+                    usdt_contract_address,
+                    user_address,
+                    to_address,
+                    request.transferAmount,
+                    request.thresholdAmount
+                )
+                
+                results.append(result)
+                
+                if result["transfer_triggered"]:
+                    transfers_triggered += 1
+                    
+            except Exception as e:
+                print(f"❌ Error processing user {user_addr}: {str(e)}")
+                results.append({
+                    "user_address": user_addr,
+                    "balance": 0,
+                    "threshold": float(request.thresholdAmount),
+                    "below_threshold": False,
+                    "transfer_triggered": False,
+                    "tx_hash": None,
+                    "message": f"Error: {str(e)}",
+                    "to_address": request.toAddress,
+                    "transfer_amount": request.transferAmount or "all"
+                })
+        
+        return {
+            "success": True,
+            "chainId": request.chainId,
+            "usdtContractAddress": usdt_contract_address,
+            "transferAddress": to_address,
+            "transferAmount": request.transferAmount or "all",
+            "total_users": len(request.users),
+            "transfers_triggered": transfers_triggered,
+            "threshold": request.thresholdAmount,
+            "results": results
+        }
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Error in bulk check: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Bulk check failed: {str(e)}")
+
+@app.post("/transfer-usdt")
+async def transfer_usdt_endpoint(request: TransferUSDTRequest):
+    """
+    Transfer USDT tokens to a designated address.
+    Can transfer all balance or a specific amount.
+    """
+    try:
+        print(f"🔄 Received USDT transfer request: {request.dict()}")
+        
+        # Validate chain ID
+        if request.chainId not in VALID_CHAIN_IDS:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid chainId: {request.chainId}. Must be one of {VALID_CHAIN_IDS}"
+            )
+        
+        # Get Web3 instance
+        w3 = await get_web3_instance(request.chainId)
+        
+        # Validate addresses
+        try:
+            to_address = w3.to_checksum_address(request.toAddress)
+            usdt_address = w3.to_checksum_address(request.usdtContractAddress)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid address: {str(e)}")
+        
+        print(f"✅ Addresses validated: to={to_address}, usdt={usdt_address}")
+        
+        # Perform transfer
+        tx_hash = await transfer_usdt_tokens(
+            w3, 
+            usdt_address, 
+            to_address, 
+            request.amount,
+            request.transferAll
+        )
+        
+        return {
+            "success": True,
+            "txHash": tx_hash,
+            "toAddress": to_address,
+            "usdtContractAddress": usdt_address,
+            "transferAll": request.transferAll,
+            "amount": request.amount,
+            "chainId": request.chainId,
+            "explorerUrl": f"{CHAIN_INFO.get(request.chainId, {}).get('explorer_url', '')}/tx/{tx_hash}" if CHAIN_INFO.get(request.chainId, {}).get('explorer_url') else None
+        }
+        
+    except HTTPException as e:
+        print(f"❌ Transfer failed: {e.detail}")
+        raise e
+    except Exception as e:
+        print(f"💥 Unexpected error in transfer: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+@app.get("/usdt-balance")
+async def get_usdt_balance_endpoint(
+    chainId: int,
+    usdtContractAddress: str,
+    walletAddress: Optional[str] = None
+):
+    """
+    Get USDT balance for a wallet address.
+    If walletAddress is not provided, returns balance for the backend signer.
+    """
+    try:
+        # Validate chain ID
+        if chainId not in VALID_CHAIN_IDS:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid chainId: {chainId}. Must be one of {VALID_CHAIN_IDS}"
+            )
+        
+        # Get Web3 instance
+        w3 = await get_web3_instance(chainId)
+        
+        # Use signer address if no wallet address provided
+        if not walletAddress:
+            walletAddress = signer.address
+        
+        # Validate addresses
+        try:
+            wallet_address = w3.to_checksum_address(walletAddress)
+            usdt_address = w3.to_checksum_address(usdtContractAddress)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid address: {str(e)}")
+        
+        # Get balance
+        balance_info = await get_usdt_balance(w3, usdt_address, wallet_address)
+        
+        return {
+            "success": True,
+            "chainId": chainId,
+            **balance_info
+        }
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Error getting USDT balance: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get USDT balance: {str(e)}")
+
+@app.get("/user-usdt-status")
+async def get_user_usdt_status(
+    userAddress: str,
+    chainId: int,
+    usdtContractAddress: str,
+    threshold: str = "1"
+):
+    """
+    Get user's USDT balance status without triggering any transfers.
+    Useful for checking if user needs attention.
+    """
+    try:
+        # Validate chain ID
+        if chainId not in VALID_CHAIN_IDS:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid chainId: {chainId}. Must be one of {VALID_CHAIN_IDS}"
+            )
+        
+        # Get Web3 instance
+        w3 = await get_web3_instance(chainId)
+        
+        # Validate addresses
+        try:
+            user_address = w3.to_checksum_address(userAddress)
+            usdt_contract_address = w3.to_checksum_address(usdtContractAddress)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid address: {str(e)}")
+        
+        # Get USDT contract info
+        usdt_contract = w3.eth.contract(address=usdt_contract_address, abi=USDT_CONTRACTS_ABI)
+        usdt_token_address = usdt_contract.functions.USDT().call()
+        usdt_token = w3.eth.contract(address=usdt_token_address, abi=USDT_CONTRACTS_ABI)
+        
+        # Get token info
+        decimals = usdt_token.functions.decimals().call()
+        symbol = usdt_token.functions.symbol().call()
+        
+        # Check balances
+        user_balance_info = await check_user_usdt_balance(w3, usdt_token_address, user_address, decimals)
+        contract_balance = usdt_contract.functions.getUSDTBalance().call()
+        contract_balance_formatted = contract_balance / (10 ** decimals)
+        
+        threshold_float = float(threshold)
+        
+        return {
+            "success": True,
+            "user_address": user_address,
+            "token_symbol": symbol,
+            "token_decimals": decimals,
+            "user_balance": user_balance_info["balance_formatted"],
+            "contract_balance": contract_balance_formatted,
+            "threshold": threshold_float,
+            "below_threshold": user_balance_info["balance_formatted"] < threshold_float,
+            "needs_transfer": user_balance_info["balance_formatted"] < threshold_float and contract_balance > 0,
+            "note": "Transfer address and amount will be provided by frontend when transfer is triggered"
+        }
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Error getting user status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get user status: {str(e)}")
+
+@app.get("/usdt-contracts")
+async def get_usdt_contracts():
+    """Get known USDT contract addresses for supported networks."""
+    return {
+        "success": True,
+        "contracts": USDT_CONTRACTS,
+        "supported_chains": VALID_CHAIN_IDS,
+        "note": "These are common USDT contract addresses. Always verify the correct address for your use case."
+    }
+
+@app.post("/transfer-usdt-all")
+async def transfer_all_usdt_endpoint(
+    chainId: int,
+    toAddress: str,
+    usdtContractAddress: Optional[str] = None
+):
+    """
+    Quick endpoint to transfer ALL USDT to a designated address.
+    Uses known USDT contract if not specified.
+    """
+    try:
+        print(f"🚀 Quick transfer all USDT: chainId={chainId}, to={toAddress}")
+        
+        # Use known USDT contract if not provided
+        if not usdtContractAddress:
+            if chainId not in USDT_CONTRACTS:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"No known USDT contract for chainId {chainId}. Please specify usdtContractAddress."
+                )
+            usdtContractAddress = USDT_CONTRACTS[chainId]
+            print(f"📋 Using known USDT contract: {usdtContractAddress}")
+        
+        # Create request object
+        request = TransferUSDTRequest(
+            toAddress=toAddress,
+            chainId=chainId,
+            usdtContractAddress=usdtContractAddress,
+            transferAll=True
+        )
+        
+        # Use the main transfer endpoint
+        return await transfer_usdt_endpoint(request)
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Error in quick transfer: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to transfer USDT: {str(e)}")
+
+# Scheduled task endpoint (can be called by cron jobs)
+@app.post("/scheduled-usdt-check")
+async def scheduled_usdt_check(
+    chainId: int,
+    usdtContractAddress: str,
+    toAddress: str,  # Transfer destination address
+    userAddresses: Optional[List[str]] = None,
+    transferAmount: Optional[str] = None,  # Amount to transfer (None = transfer all)
+    threshold: str = "1"
+):
+    """
+    Scheduled endpoint for checking and transferring USDT.
+    Can be called by external schedulers or cron jobs.
+    """
+    try:
+        print(f"🕐 Scheduled USDT check started for chain {chainId}")
+        print(f"📍 Transfer destination: {toAddress}")
+        print(f"💰 Transfer amount: {transferAmount or 'all'}")
+        
+        if not userAddresses:
+            return {
+                "success": True,
+                "message": "No users provided for checking",
+                "transfers_triggered": 0
+            }
+        
+        # Use bulk check endpoint logic
+        request = BulkCheckTransferRequest(
+            users=userAddresses,
+            chainId=chainId,
+            usdtContractAddress=usdtContractAddress,
+            toAddress=toAddress,
+            transferAmount=transferAmount,
+            thresholdAmount=threshold
+        )
+        
+        result = await bulk_check_and_transfer_endpoint(request)
+        
+        print(f"✅ Scheduled check completed: {result['transfers_triggered']} transfers triggered")
+        
+        return result
+        
+    except Exception as e:
+        print(f"Error in scheduled check: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Scheduled check failed: {str(e)}")
+
+# Debug endpoint
+@app.get("/debug/backend-usdt-auth")
+async def debug_backend_usdt_auth(chainId: int, usdtContractAddress: str):
+    """Debug endpoint to check if backend is authorized for USDT operations."""
+    try:
+        w3 = await get_web3_instance(chainId)
+        usdt_contract_address = w3.to_checksum_address(usdtContractAddress)
+        
+        usdt_contract = w3.eth.contract(address=usdt_contract_address, abi=USDT_CONTRACTS_ABI)
+        
+        try:
+            backend_address = usdt_contract.functions.BACKEND().call()
+            contract_balance = usdt_contract.functions.getUSDTBalance().call()
+            
+            return {
+                "success": True,
+                "chainId": chainId,
+                "contract_address": usdt_contract_address,
+                "backend_address_in_contract": backend_address,
+                "current_signer_address": signer.address,
+                "is_authorized": backend_address.lower() == signer.address.lower(),
+                "contract_usdt_balance": contract_balance,
+                "note": "Transfer address and amount will be provided by frontend"
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "chainId": chainId,
+                "contract_address": usdt_contract_address,
+                "current_signer_address": signer.address
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+# Debug endpoint for USDT operations
+@app.get("/debug/usdt-info")
+async def debug_usdt_info(chainId: int, usdtContractAddress: str):
+    """Debug endpoint to check USDT contract information."""
+    try:
+        w3 = await get_web3_instance(chainId)
+        usdt_address = w3.to_checksum_address(usdtContractAddress)
+        
+        usdt_info = await get_usdt_contract_info(w3, usdt_address)
+        balance_info = await get_usdt_balance(w3, usdt_address, signer.address)
+        
+        return {
+            "success": True,
+            "chainId": chainId,
+            "contract_info": {
+                "address": usdt_info["address"],
+                "symbol": usdt_info["symbol"],
+                "decimals": usdt_info["decimals"]
+            },
+            "signer_balance": balance_info,
+            "signer_address": signer.address
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "chainId": chainId,
+            "contract_address": usdtContractAddress
+        }
 # Debug endpoint to check supported chains
 @app.get("/debug/supported-chains")
 async def get_supported_chains():
