@@ -41,7 +41,19 @@ supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_
 
 # SYNCED CHAIN IDS - Must match frontend exactly
 # Frontend: [1, 42220, 44787, 62320, 1135, 4202, 8453, 84532, 421614, 137]
-VALID_CHAIN_IDS = [1, 42220, 44787, 62320, 1135, 4202, 8453, 84532, 421614, 137]
+VALID_CHAIN_IDS = [
+    1,      # Ethereum Mainnet
+    42220,  # Celo Mainnet  
+    44787,  # Celo Testnet
+    62320,  # Custom Network
+    1135,   # Lisk
+    4202,   # Lisk Testnet
+    8453,   # Base
+    84532,  # Base Testnet
+    42161,  # Arbitrum One 
+    421614, # Arbitrum Sepolia
+    137,    # Polygon Mainnet
+]
 
 USDT_CONTRACTS_ABI = [
     {
@@ -1561,9 +1573,9 @@ CHAIN_INFO = {
     42220: {"name": "Celo Mainnet", "native_token": "CELO"},
     44787: {"name": "Celo Testnet", "native_token": "CELO"},
     
-    # Arbitrum - Now includes both mainnet and testnet
-    42161: {"name": "Arbitrum One", "native_token": "ETH"},
-    421614: {"name": "Arbitrum Sepolia", "native_token": "ETH"},  # Added this!
+    # Arbitrum - Now ACTUALLY includes both mainnet and testnet in VALID_CHAIN_IDS
+    42161: {"name": "Arbitrum One", "native_token": "ETH"},        # ← Now properly included!
+    421614: {"name": "Arbitrum Sepolia", "native_token": "ETH"},
     
     # Base
     8453: {"name": "Base", "native_token": "ETH"},
@@ -1581,6 +1593,7 @@ CHAIN_INFO = {
     # Custom/Other
     62320: {"name": "Custom Network", "native_token": "ETH"},
 }
+
 USDT_CONTRACTS = {
     
     42220: "0x7F561a9b25dC8a547deC3ca8D851CcC4A54e5665",   # Celo Mainnet (example)
