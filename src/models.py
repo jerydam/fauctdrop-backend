@@ -28,3 +28,21 @@ class BulkCheckTransferRequest(BaseModel):
     chainId: int
     usdtContractAddress: str
     thresholdAmount: str = "1"
+    
+class SocialMediaLink(BaseModel):
+    platform: str  # "twitter", "telegram", "discord", etc.
+    url: str
+    handle: str
+    action: str  # "follow", "join", "subscribe"
+
+class SetClaimParametersRequest(BaseModel):
+    faucetAddress: str
+    claimAmount: int
+    startTime: int
+    endTime: int
+    chainId: int
+    socialMediaLinks: Optional[List[SocialMediaLink]] = []
+
+class GetSocialMediaLinksRequest(BaseModel):
+    faucetAddress: str
+ 
