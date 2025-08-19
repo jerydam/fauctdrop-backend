@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from web3 import Web3
-from typing import Dict, Tuple, List, Optional
+from typing import Dict, Tuple, List, Optional, Any
 from eth_account import Account
 from web3.types import TxReceipt
 from web3.exceptions import ContractLogicError
@@ -10,11 +10,12 @@ import sys
 import os
 import asyncio
 import secrets
-from datetime import datetime
-from typing import Optional, Dict, Any
+import json  # Added missing import
+from datetime import datetime, timedelta
 from supabase import create_client, Client
 from config import PRIVATE_KEY, get_rpc_url
 from decimal import Decimal
+import logging
 
 # Add parent directory to sys.path for config import
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -54,6 +55,369 @@ VALID_CHAIN_IDS = [
     137,    # Polygon Mainnet
 ]
 
+# Analytics cache storage keys
+ANALYTICS_CACHE_KEYS = {
+    'DASHBOARD_DATA': 'analytics_dashboard_data',
+    'FAUCETS_DATA': 'analytics_faucets_data', 
+    'TRANSACTIONS_DATA': 'analytics_transactions_data',
+    'USERS_DATA': 'analytics_users_data',
+    'CLAIMS_DATA': 'analytics_claims_data',
+    'LAST_UPDATED': 'analytics_last_updated',
+    'UPDATE_STATUS': 'analytics_update_status'
+}
+
+# Analytics networks configuration
+ANALYTICS_NETWORKS = [
+    {
+        "chainId": 42220,
+        "name": "Celo",
+        "rpcUrl": "https://forno.celo.org",
+        "factoryAddresses": [
+            "0x17cFed7fEce35a9A71D60Fbb5CA52237103A21FB",
+            "0x9D6f441b31FBa22700bb3217229eb89b13FB49de",
+            "0xE3Ac30fa32E727386a147Fe08b4899Da4115202f",
+            "0xF8707b53a2bEc818E96471DDdb34a09F28E0dE6D",
+            "0x8D1306b3970278b3AB64D1CE75377BDdf00f61da",
+            "0x8cA5975Ded3B2f93E188c05dD6eb16d89b14aeA5"
+        ]
+    },
+    {
+        "chainId": 42161, 
+        "name": "Arbitrum",
+        "rpcUrl": "https://arb1.arbitrum.io/rpc",
+        "factoryAddresses": [
+            "0x0a5C19B5c0f4B9260f0F8966d26bC05AAea2009C",
+            "0x42355492298A89eb1EF7FB2fFE4555D979f1Eee9",
+            "0x9D6f441b31FBa22700bb3217229eb89b13FB49de"
+        ]
+    },
+    {
+        "chainId": 1135,
+        "name": "Lisk", 
+        "rpcUrl": "https://rpc.api.lisk.com",
+        "factoryAddresses": [
+            "0x96E9911df17e94F7048cCbF7eccc8D9b5eDeCb5C",
+            "0x4F5Cf906b9b2Bf4245dba9F7d2d7F086a2a441C2",
+            "0x21E855A5f0E6cF8d0CfE8780eb18e818950dafb7",
+            "0xd6Cb67dF496fF739c4eBA2448C1B0B44F4Cf0a7C",
+            "0x0837EACf85472891F350cba74937cB02D90E60A4"
+        ]
+    },
+    {
+        "chainId": 8453,
+        "name": "Base",
+        "rpcUrl": "https://mainnet.base.org",
+        "factoryAddresses": [
+            "0x945431302922b69D500671201CEE62900624C6d5",
+            "0xda191fb5Ca50fC95226f7FC91C792927FC968CA9",
+            "0x587b840140321DD8002111282748acAdaa8fA206"
+        ]
+    }
+]
+
+# Chain configurations for analytics
+CHAIN_CONFIGS = {
+    1: {
+        "name": "Ethereum Mainnet",
+        "nativeCurrency": {"symbol": "ETH", "decimals": 18}
+    },
+    42220: {
+        "name": "Celo Mainnet",
+        "nativeCurrency": {"symbol": "CELO", "decimals": 18}
+    },
+    42161: {
+        "name": "Arbitrum One",
+        "nativeCurrency": {"symbol": "ETH", "decimals": 18}
+    },
+    1135: {
+        "name": "Lisk",
+        "nativeCurrency": {"symbol": "LISK", "decimals": 18}
+    },
+    8453: {
+        "name": "Base",
+        "nativeCurrency": {"symbol": "ETH", "decimals": 18}
+    }
+}
+
+# Basic ERC20 ABI for token operations
+ERC20_ABI = [
+    {
+        "inputs": [{"internalType": "address", "name": "account", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "symbol",
+        "outputs": [{"internalType": "string", "name": "", "type": "string"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "decimals",
+        "outputs": [{"internalType": "uint8", "name": "", "type": "uint8"}],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+
+# Simplified faucet ABI for analytics (only what we need)
+FAUCET_ABI_ANALYTICS = [
+    {
+        "inputs": [],
+        "name": "name",
+        "outputs": [{"internalType": "string", "name": "", "type": "string"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "token",
+        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "tokenAddress",
+        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+
+# Factory ABI (keeping existing from original code)
+FACTORY_ABI = [
+    {
+        "inputs": [],
+        "stateMutability": "nonpayable",
+        "type": "constructor"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "faucet",
+                "type": "address"
+            }
+        ],
+        "name": "FaucetDeletedError",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "FaucetNotRegistered",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidFaucet",
+        "type": "error"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "owner",
+                "type": "address"
+            }
+        ],
+        "name": "OwnableInvalidOwner",
+        "type": "error"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "account",
+                "type": "address"
+            }
+        ],
+        "name": "OwnableUnauthorizedAccount",
+        "type": "error"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {
+                "indexed": True,
+                "internalType": "address",
+                "name": "faucet",
+                "type": "address"
+            },
+            {
+                "indexed": False,
+                "internalType": "address",
+                "name": "owner",
+                "type": "address"
+            },
+            {
+                "indexed": False,
+                "internalType": "string",
+                "name": "name",
+                "type": "string"
+            },
+            {
+                "indexed": False,
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            },
+            {
+                "indexed": False,
+                "internalType": "address",
+                "name": "backend",
+                "type": "address"
+            }
+        ],
+        "name": "FaucetCreated",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {
+                "indexed": True,
+                "internalType": "address",
+                "name": "faucet",
+                "type": "address"
+            },
+            {
+                "indexed": True,
+                "internalType": "address",
+                "name": "initiator",
+                "type": "address"
+            }
+        ],
+        "name": "FaucetDeleted",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {
+                "indexed": True,
+                "internalType": "address",
+                "name": "previousOwner",
+                "type": "address"
+            },
+            {
+                "indexed": True,
+                "internalType": "address",
+                "name": "newOwner",
+                "type": "address"
+            }
+        ],
+        "name": "OwnershipTransferred",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {
+                "indexed": True,
+                "internalType": "address",
+                "name": "faucet",
+                "type": "address"
+            },
+            {
+                "indexed": False,
+                "internalType": "string",
+                "name": "transactionType",
+                "type": "string"
+            },
+            {
+                "indexed": False,
+                "internalType": "address",
+                "name": "initiator",
+                "type": "address"
+            },
+            {
+                "indexed": False,
+                "internalType": "uint256",
+                "name": "amount",
+                "type": "uint256"
+            },
+            {
+                "indexed": False,
+                "internalType": "bool",
+                "name": "isEther",
+                "type": "bool"
+            },
+            {
+                "indexed": False,
+                "internalType": "uint256",
+                "name": "timestamp",
+                "type": "uint256"
+            }
+        ],
+        "name": "TransactionRecorded",
+        "type": "event"
+    },
+    {
+        "inputs": [],
+        "name": "getAllFaucets",
+        "outputs": [
+            {
+                "internalType": "address[]",
+                "name": "",
+                "type": "address[]"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getAllTransactions",
+        "outputs": [
+            {
+                "components": [
+                    {
+                        "internalType": "address",
+                        "name": "faucetAddress",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "string",
+                        "name": "transactionType",
+                        "type": "string"
+                    },
+                    {
+                        "internalType": "address",
+                        "name": "initiator",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "amount",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "bool",
+                        "name": "isEther",
+                        "type": "bool"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "timestamp",
+                        "type": "uint256"
+                    }
+                ],
+                "internalType": "struct TransactionLibrary.Transaction[]",
+                "name": "",
+                "type": "tuple[]"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+
+# USDT Contracts ABI (keeping existing)
 USDT_CONTRACTS_ABI = [
     {
         "inputs": [
@@ -97,6 +461,7 @@ USDT_CONTRACTS_ABI = [
     }
 ]
 
+# USDT Management ABI (keeping existing)
 USDT_MANAGEMENT_ABI = [
     {
         "inputs": [
@@ -119,73 +484,9 @@ USDT_MANAGEMENT_ABI = [
     },
     {
         "inputs": [
-            {"internalType": "address", "name": "initialOwner", "type": "address"}
-        ],
-        "stateMutability": "nonpayable",
-        "type": "constructor"
-    },
-    {
-        "inputs": [
-            {"internalType": "address", "name": "owner", "type": "address"}
-        ],
-        "name": "OwnableInvalidOwner",
-        "type": "error"
-    },
-    {
-        "inputs": [
-            {"internalType": "address", "name": "account", "type": "address"}
-        ],
-        "name": "OwnableUnauthorizedAccount",
-        "type": "error"
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "internalType": "address", "name": "from", "type": "address"},
-            {"indexed": False, "internalType": "uint256", "name": "amount", "type": "uint256"}
-        ],
-        "name": "EtherReceived",
-        "type": "event"
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "internalType": "address", "name": "to", "type": "address"},
-            {"indexed": False, "internalType": "uint256", "name": "amount", "type": "uint256"}
-        ],
-        "name": "EtherWithdrawn",
-        "type": "event"
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "internalType": "address", "name": "previousOwner", "type": "address"},
-            {"indexed": True, "internalType": "address", "name": "newOwner", "type": "address"}
-        ],
-        "name": "OwnershipTransferred",
-        "type": "event"
-    },
-    {
-        "inputs": [],
-        "name": "renounceOwnership",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function"
-    },
-    {
-        "inputs": [
             {"internalType": "address", "name": "to", "type": "address"}
         ],
         "name": "transferAllUSDT",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function"
-    },
-    {
-        "inputs": [
-            {"internalType": "address", "name": "newOwner", "type": "address"}
-        ],
-        "name": "transferOwnership",
         "outputs": [],
         "stateMutability": "nonpayable",
         "type": "function"
@@ -201,109 +502,8 @@ USDT_MANAGEMENT_ABI = [
         "type": "function"
     },
     {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "internalType": "address", "name": "from", "type": "address"},
-            {"indexed": False, "internalType": "uint256", "name": "amount", "type": "uint256"}
-        ],
-        "name": "USDTDeposited",
-        "type": "event"
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "internalType": "address", "name": "to", "type": "address"},
-            {"indexed": False, "internalType": "uint256", "name": "amount", "type": "uint256"}
-        ],
-        "name": "USDTTransferred",
-        "type": "event"
-    },
-    {
-        "stateMutability": "payable",
-        "type": "fallback"
-    },
-    {
-        "inputs": [
-            {"internalType": "address payable", "name": "to", "type": "address"}
-        ],
-        "name": "withdrawAllETH",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function"
-    },
-    {
-        "inputs": [
-            {"internalType": "address payable", "name": "to", "type": "address"},
-            {"internalType": "uint256", "name": "amount", "type": "uint256"}
-        ],
-        "name": "withdrawETH",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function"
-    },
-    {
-        "stateMutability": "payable",
-        "type": "receive"
-    },
-    {
-        "inputs": [
-            {"internalType": "address", "name": "user", "type": "address"},
-            {"internalType": "uint256", "name": "amount", "type": "uint256"}
-        ],
-        "name": "checkDepositRequirements",
-        "outputs": [
-            {"internalType": "bool", "name": "hasBalance", "type": "bool"},
-            {"internalType": "bool", "name": "hasApproval", "type": "bool"},
-            {"internalType": "uint256", "name": "currentAllowance", "type": "uint256"}
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [
-            {"internalType": "uint256", "name": "amount", "type": "uint256"}
-        ],
-        "name": "getDepositInstructions",
-        "outputs": [
-            {"internalType": "string", "name": "instructions", "type": "string"}
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [],
-        "name": "getETHBalance",
-        "outputs": [
-            {"internalType": "uint256", "name": "", "type": "uint256"}
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [
-            {"internalType": "uint256", "name": "amount", "type": "uint256"}
-        ],
-        "name": "getRequiredApproval",
-        "outputs": [
-            {"internalType": "uint256", "name": "", "type": "uint256"}
-        ],
-        "stateMutability": "pure",
-        "type": "function"
-    },
-    {
         "inputs": [],
         "name": "getUSDTBalance",
-        "outputs": [
-            {"internalType": "uint256", "name": "", "type": "uint256"}
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [
-            {"internalType": "address", "name": "user", "type": "address"}
-        ],
-        "name": "getUserDeposits",
         "outputs": [
             {"internalType": "uint256", "name": "", "type": "uint256"}
         ],
@@ -327,21 +527,10 @@ USDT_MANAGEMENT_ABI = [
         ],
         "stateMutability": "view",
         "type": "function"
-    },
-    {
-        "inputs": [
-            {"internalType": "address", "name": "", "type": "address"}
-        ],
-        "name": "userDeposits",
-        "outputs": [
-            {"internalType": "uint256", "name": "", "type": "uint256"}
-        ],
-        "stateMutability": "view",
-        "type": "function"
     }
 ]
 
-# FAUCET_ABI definition here (keeping only one instance)
+# Full Faucet ABI (keeping existing - this is used for actual faucet operations)
 FAUCET_ABI = [
 	{
 		"inputs": [
@@ -1500,7 +1689,7 @@ FAUCET_ABI = [
 # Initialize signer globally
 signer = Account.from_key(PRIVATE_KEY)
 
-# Pydantic Models (keeping the enhanced versions)
+# Pydantic Models (keeping existing models)
 class ClaimRequest(BaseModel):
     userAddress: str
     faucetAddress: str
@@ -1546,7 +1735,7 @@ class ClaimCustomRequest(BaseModel):
     chainId: int
     divviReferralData: Optional[str] = None
 
-# Enhanced FaucetTask model (keeping the more complete version)
+# Enhanced FaucetTask model
 class FaucetTask(BaseModel):
     title: str
     description: str
@@ -1632,6 +1821,792 @@ USDT_CONTRACTS = {
     42220: "0x7F561a9b25dC8a547deC3ca8D851CcC4A54e5665",   # Celo Mainnet (example)
 }
 
+# Enhanced Analytics Data Manager (keeping only one class)
+class AnalyticsDataManager:
+    def __init__(self):
+        self.is_updating = False
+        self.last_update = None
+        
+    async def store_analytics_data(self, key: str, data: Any):
+        """Store analytics data in Supabase"""
+        try:
+            # Convert data to JSON string for storage
+            json_data = json.dumps(data, default=str)
+            
+            upsert_data = {
+                "key": key,
+                "data": json_data,
+                "updated_at": datetime.now().isoformat()
+            }
+            
+            response = supabase.table("analytics_cache").upsert(
+                upsert_data,
+                on_conflict="key"
+            ).execute()
+            
+            if not response.data:
+                raise Exception(f"Failed to store analytics data for key: {key}")
+                
+            print(f"✅ Stored analytics data for key: {key}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error storing analytics data for {key}: {str(e)}")
+            return False
+    
+    async def get_analytics_data(self, key: str) -> Optional[Any]:
+        """Get analytics data from Supabase"""
+        try:
+            response = supabase.table("analytics_cache").select("*").eq("key", key).execute()
+            
+            if not response.data or len(response.data) == 0:
+                return None
+                
+            record = response.data[0]
+            data = json.loads(record["data"])
+            
+            return {
+                "data": data,
+                "updated_at": record["updated_at"]
+            }
+            
+        except Exception as e:
+            print(f"❌ Error getting analytics data for {key}: {str(e)}")
+            return None
+
+    async def get_token_info(self, token_address: str, provider: Web3, chain_id: int, is_ether: bool) -> Dict[str, Any]:
+        """Get token information"""
+        chain_config = CHAIN_CONFIGS.get(chain_id, {})
+        
+        if is_ether:
+            return {
+                "symbol": chain_config.get("nativeCurrency", {}).get("symbol", "ETH"),
+                "decimals": chain_config.get("nativeCurrency", {}).get("decimals", 18)
+            }
+
+        try:
+            token_contract = provider.eth.contract(address=token_address, abi=ERC20_ABI)
+            symbol = token_contract.functions.symbol().call()
+            decimals = token_contract.functions.decimals().call()
+            
+            return {
+                "symbol": symbol or "TOKEN",
+                "decimals": int(decimals) or 18
+            }
+        except Exception as e:
+            print(f"Error fetching token info for {token_address}: {str(e)}")
+            return {"symbol": "TOKEN", "decimals": 18}
+
+    async def get_all_faucets_from_network(self, network: Dict) -> List[Dict]:
+        """Fetch all faucets from a single network"""
+        try:
+            print(f"🔄 Fetching faucets from {network['name']}...")
+            
+            w3 = Web3(Web3.HTTPProvider(network['rpcUrl']))
+            if not w3.is_connected():
+                raise Exception(f"Failed to connect to {network['name']}")
+            
+            all_faucets = []
+            
+            for factory_address in network.get('factoryAddresses', []):
+                try:
+                    if not Web3.is_address(factory_address):
+                        continue
+                        
+                    factory_contract = w3.eth.contract(
+                        address=factory_address, 
+                        abi=FACTORY_ABI
+                    )
+                    
+                    # Check if contract exists
+                    code = w3.eth.get_code(factory_address)
+                    if code == "0x":
+                        continue
+                    
+                    # Get all faucets
+                    faucets = factory_contract.functions.getAllFaucets().call()
+                    
+                    for faucet_address in faucets:
+                        try:
+                            # Get faucet name
+                            faucet_contract = w3.eth.contract(
+                                address=faucet_address, 
+                                abi=FAUCET_ABI_ANALYTICS
+                            )
+                            
+                            try:
+                                name = faucet_contract.functions.name().call()
+                            except:
+                                name = f"Faucet {faucet_address[:6]}...{faucet_address[-4:]}"
+                            
+                            all_faucets.append({
+                                "address": faucet_address,
+                                "name": name,
+                                "networkName": network['name'],
+                                "chainId": network['chainId'],
+                                "factoryAddress": factory_address
+                            })
+                            
+                        except Exception as e:
+                            print(f"⚠️ Error processing faucet {faucet_address}: {str(e)}")
+                            continue
+                    
+                    print(f"✅ Got {len(faucets)} faucets from factory {factory_address}")
+                    
+                except Exception as e:
+                    print(f"⚠️ Error with factory {factory_address}: {str(e)}")
+                    continue
+            
+            print(f"📊 Total faucets from {network['name']}: {len(all_faucets)}")
+            return all_faucets
+            
+        except Exception as e:
+            print(f"❌ Error fetching faucets from {network['name']}: {str(e)}")
+            return []
+
+    async def get_all_transactions_from_network(self, network: Dict) -> List[Dict]:
+        """Fetch all transactions from a single network"""
+        try:
+            print(f"🔄 Fetching transactions from {network['name']}...")
+            
+            w3 = Web3(Web3.HTTPProvider(network['rpcUrl']))
+            if not w3.is_connected():
+                raise Exception(f"Failed to connect to {network['name']}")
+            
+            all_transactions = []
+            
+            for factory_address in network.get('factoryAddresses', []):
+                try:
+                    if not Web3.is_address(factory_address):
+                        continue
+                        
+                    factory_contract = w3.eth.contract(
+                        address=factory_address, 
+                        abi=FACTORY_ABI
+                    )
+                    
+                    # Check if contract exists
+                    code = w3.eth.get_code(factory_address)
+                    if code == "0x":
+                        continue
+                    
+                    # Get all transactions
+                    transactions = factory_contract.functions.getAllTransactions().call()
+                    
+                    for tx in transactions:
+                        # Get token info if needed
+                        token_info = {"symbol": "ETH", "decimals": 18}
+                        if not tx[4]:  # if not isEther
+                            try:
+                                faucet_contract = w3.eth.contract(
+                                    address=tx[0], 
+                                    abi=FAUCET_ABI_ANALYTICS
+                                )
+                                try:
+                                    token_address = faucet_contract.functions.token().call()
+                                except:
+                                    token_address = faucet_contract.functions.tokenAddress().call()
+                                
+                                token_info = await self.get_token_info(token_address, w3, network['chainId'], False)
+                            except:
+                                pass
+                        
+                        all_transactions.append({
+                            "faucetAddress": tx[0],
+                            "transactionType": tx[1],
+                            "initiator": tx[2],
+                            "amount": str(tx[3]),
+                            "isEther": tx[4],
+                            "timestamp": int(tx[5]),
+                            "networkName": network['name'],
+                            "chainId": network['chainId'],
+                            "factoryAddress": factory_address,
+                            "tokenSymbol": token_info["symbol"],
+                            "tokenDecimals": token_info["decimals"]
+                        })
+                    
+                    print(f"✅ Got {len(transactions)} transactions from factory {factory_address}")
+                    
+                except Exception as e:
+                    print(f"⚠️ Error with factory {factory_address}: {str(e)}")
+                    continue
+            
+            print(f"📊 Total transactions from {network['name']}: {len(all_transactions)}")
+            return all_transactions
+            
+        except Exception as e:
+            print(f"❌ Error fetching transactions from {network['name']}: {str(e)}")
+            return []
+
+    def process_faucets_for_chart(self, faucets_data: List[Dict]) -> List[Dict]:
+        """Process faucets data for chart display"""
+        try:
+            network_counts = {}
+            
+            for faucet in faucets_data:
+                network = faucet.get('networkName', 'Unknown')
+                network_counts[network] = network_counts.get(network, 0) + 1
+            
+            chart_data = []
+            for network, count in network_counts.items():
+                chart_data.append({
+                    "network": network,
+                    "faucets": count
+                })
+            
+            # Sort by count descending
+            chart_data.sort(key=lambda x: x['faucets'], reverse=True)
+            
+            return chart_data
+            
+        except Exception as e:
+            print(f"Error processing faucets for chart: {str(e)}")
+            return []
+
+    def process_users_for_chart(self, claims_data: List[Dict]) -> Dict[str, Any]:
+        """Process users data for chart display"""
+        try:
+            unique_users = set()
+            user_first_claim_date = {}
+            new_users_by_date = {}
+            
+            # Process all claims to find first claim date for each user
+            for claim in claims_data:
+                claimer = claim.get('initiator') or claim.get('claimer')
+                if claimer and isinstance(claimer, str) and claimer.startswith('0x'):
+                    claimer_lower = claimer.lower()
+                    unique_users.add(claimer_lower)
+                    
+                    # Convert timestamp to date
+                    timestamp = claim.get('timestamp', 0)
+                    date = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d')
+                    
+                    # Track the first date this user made a claim
+                    if claimer_lower not in user_first_claim_date or date < user_first_claim_date[claimer_lower]:
+                        user_first_claim_date[claimer_lower] = date
+            
+            # Group users by their first claim date
+            for user, first_date in user_first_claim_date.items():
+                if first_date not in new_users_by_date:
+                    new_users_by_date[first_date] = set()
+                new_users_by_date[first_date].add(user)
+            
+            # Convert to chart data format and sort by date
+            sorted_dates = sorted(new_users_by_date.keys())
+            
+            cumulative_users = 0
+            chart_data = []
+            
+            for date in sorted_dates:
+                new_users_count = len(new_users_by_date[date])
+                cumulative_users += new_users_count
+                
+                chart_data.append({
+                    "date": date,
+                    "newUsers": new_users_count,
+                    "cumulativeUsers": cumulative_users
+                })
+            
+            return {
+                "chartData": chart_data,
+                "totalUniqueUsers": len(unique_users),
+                "totalClaims": len(claims_data),
+                "users": list(unique_users)  # Add this for compatibility
+            }
+            
+        except Exception as e:
+            print(f"Error processing users for chart: {str(e)}")
+            return {"chartData": [], "totalUniqueUsers": 0, "totalClaims": 0, "users": []}
+
+    def process_claims_for_chart(self, claims_data: List[Dict], faucet_names: Dict[str, str] = None) -> Dict[str, Any]:
+        """Process claims data for chart display"""
+        try:
+            if faucet_names is None:
+                faucet_names = {}
+                
+            claims_by_faucet = {}
+            total_claims = len(claims_data)
+            
+            # Process all claims
+            for claim in claims_data:
+                faucet_address = claim.get('faucetAddress', '').lower()
+                network_name = claim.get('networkName', 'Unknown')
+                
+                if faucet_address not in claims_by_faucet:
+                    claims_by_faucet[faucet_address] = {
+                        'claims': 0,
+                        'network': network_name,
+                        'chainId': claim.get('chainId', 0),
+                        'totalAmount': 0,
+                        'tokenSymbol': claim.get('tokenSymbol', 'ETH'),
+                        'tokenDecimals': claim.get('tokenDecimals', 18),
+                        'latestTimestamp': 0
+                    }
+                
+                claims_by_faucet[faucet_address]['claims'] += 1
+                
+                # Add amount if available
+                amount = claim.get('amount', 0)
+                if isinstance(amount, str) and amount.isdigit():
+                    claims_by_faucet[faucet_address]['totalAmount'] += int(amount)
+                
+                # Update latest timestamp
+                timestamp = claim.get('timestamp', 0)
+                if timestamp > claims_by_faucet[faucet_address]['latestTimestamp']:
+                    claims_by_faucet[faucet_address]['latestTimestamp'] = timestamp
+            
+            # Create faucet rankings
+            faucet_rankings = []
+            sorted_faucets = sorted(
+                claims_by_faucet.items(),
+                key=lambda x: x[1]['latestTimestamp'],
+                reverse=True
+            )
+            
+            for rank, (faucet_address, data) in enumerate(sorted_faucets, 1):
+                faucet_name = faucet_names.get(faucet_address, f"Faucet {faucet_address[:6]}...{faucet_address[-4:]}")
+                
+                # Format total amount
+                decimals = data['tokenDecimals']
+                total_amount = data['totalAmount'] / (10 ** decimals)
+                total_amount_str = f"{total_amount:.4f} {data['tokenSymbol']}"
+                
+                faucet_rankings.append({
+                    "rank": rank,
+                    "faucetAddress": faucet_address,
+                    "faucetName": faucet_name,
+                    "network": data['network'],
+                    "chainId": data['chainId'],
+                    "totalClaims": data['claims'],
+                    "latestClaimTime": data['latestTimestamp'],
+                    "totalAmount": total_amount_str
+                })
+            
+            # Create chart data (top 10 for pie chart)
+            sorted_by_claims = sorted(
+                claims_by_faucet.items(),
+                key=lambda x: x[1]['claims'],
+                reverse=True
+            )
+            
+            top_10_faucets = sorted_by_claims[:10]
+            other_faucets = sorted_by_claims[10:]
+            other_total_claims = sum(data['claims'] for _, data in other_faucets)
+            
+            # Generate colors
+            colors = []
+            for i in range(len(top_10_faucets) + (1 if other_total_claims > 0 else 0)):
+                hue = (i * 137.508) % 360
+                colors.append(f"hsl({hue}, 70%, 60%)")
+            
+            chart_data = []
+            for i, (faucet_address, data) in enumerate(top_10_faucets):
+                faucet_name = faucet_names.get(faucet_address, f"Faucet {faucet_address[:6]}...{faucet_address[-4:]}")
+                chart_data.append({
+                    "name": faucet_name,
+                    "value": data['claims'],
+                    "color": colors[i],
+                    "faucetAddress": faucet_address
+                })
+            
+            if other_total_claims > 0:
+                chart_data.append({
+                    "name": f"Others ({len(other_faucets)} faucets)",
+                    "value": other_total_claims,
+                    "color": colors[len(top_10_faucets)],
+                    "faucetAddress": "others"
+                })
+            
+            return {
+                "chartData": chart_data,
+                "faucetRankings": faucet_rankings,
+                "totalClaims": total_claims,
+                "totalFaucets": len(claims_by_faucet)
+            }
+            
+        except Exception as e:
+            print(f"Error processing claims for chart: {str(e)}")
+            return {"chartData": [], "faucetRankings": [], "totalClaims": 0, "totalFaucets": 0}
+
+    def process_transactions_for_chart(self, transactions_data: List[Dict]) -> Dict[str, Any]:
+        """Process transactions data for chart display"""
+        try:
+            network_stats = {}
+            total_transactions = len(transactions_data)
+            
+            # Network colors
+            network_colors = {
+                "Celo": "#35D07F",
+                "Lisk": "#0D4477",
+                "Base": "#0052FF", 
+                "Arbitrum": "#28A0F0",
+                "Ethereum": "#627EEA",
+                "Polygon": "#8247E5",
+                "Optimism": "#FF0420"
+            }
+            
+            # Process transactions by network
+            for tx in transactions_data:
+                network_name = tx.get('networkName', 'Unknown')
+                chain_id = tx.get('chainId', 0)
+                
+                if network_name not in network_stats:
+                    network_stats[network_name] = {
+                        "name": network_name,
+                        "chainId": chain_id,
+                        "totalTransactions": 0,
+                        "color": network_colors.get(network_name, "#6B7280"),
+                        "factoryAddresses": [],
+                        "rpcUrl": ""
+                    }
+                
+                network_stats[network_name]["totalTransactions"] += 1
+                
+                # Add factory address if not already present
+                factory_address = tx.get('factoryAddress')
+                if factory_address and factory_address not in network_stats[network_name]["factoryAddresses"]:
+                    network_stats[network_name]["factoryAddresses"].append(factory_address)
+            
+            # Convert to list and sort by transaction count
+            network_stats_list = list(network_stats.values())
+            network_stats_list.sort(key=lambda x: x["totalTransactions"], reverse=True)
+            
+            return {
+                "networkStats": network_stats_list,
+                "totalTransactions": total_transactions
+            }
+            
+        except Exception as e:
+            print(f"Error processing transactions for chart: {str(e)}")
+            return {"networkStats": [], "totalTransactions": 0}
+
+    async def fetch_faucet_names(self, faucets_data: List[Dict]) -> Dict[str, str]:
+        """Fetch faucet names for addresses"""
+        try:
+            faucet_names = {}
+            
+            for faucet_data in faucets_data:
+                address = faucet_data.get('address', '').lower()
+                name = faucet_data.get('name', '')
+                
+                if address and name:
+                    faucet_names[address] = name
+            
+            return faucet_names
+            
+        except Exception as e:
+            print(f"Error fetching faucet names: {str(e)}")
+            return {}
+
+    async def update_all_analytics_data(self) -> Dict[str, Any]:
+        """Update all analytics data from blockchain sources"""
+        if self.is_updating:
+            return {"success": False, "message": "Update already in progress"}
+        
+        self.is_updating = True
+        update_start = datetime.now()
+        
+        try:
+            print("🚀 Starting analytics data update...")
+            
+            # Update status
+            await self.store_analytics_data(ANALYTICS_CACHE_KEYS['UPDATE_STATUS'], {
+                "updating": True,
+                "started_at": update_start.isoformat(),
+                "message": "Fetching data from blockchain networks..."
+            })
+            
+            # Collect all data
+            all_transactions = []
+            all_faucets = []
+            all_claims = []
+            
+            # Process each network
+            for network in ANALYTICS_NETWORKS:
+                try:
+                    # Get transactions
+                    network_transactions = await self.get_all_transactions_from_network(network)
+                    all_transactions.extend(network_transactions)
+                    
+                    # Get faucets
+                    network_faucets = await self.get_all_faucets_from_network(network)
+                    all_faucets.extend(network_faucets)
+                    
+                    # Filter claims from transactions
+                    network_claims = [
+                        tx for tx in network_transactions 
+                        if 'claim' in tx.get('transactionType', '').lower()
+                    ]
+                    all_claims.extend(network_claims)
+                    
+                    print(f"✅ Processed {network['name']}: {len(network_transactions)} transactions, {len(network_faucets)} faucets, {len(network_claims)} claims")
+                    
+                except Exception as e:
+                    print(f"❌ Error processing network {network.get('name', 'unknown')}: {str(e)}")
+                    continue
+            
+            # Process data for charts
+            faucet_names = await self.fetch_faucet_names(all_faucets)
+            
+            # Process faucets data
+            faucets_chart_data = self.process_faucets_for_chart(all_faucets)
+            
+            # Process users data
+            users_chart_data = self.process_users_for_chart(all_claims)
+            
+            # Process claims data
+            claims_chart_data = self.process_claims_for_chart(all_claims, faucet_names)
+            
+            # Process transactions data
+            transactions_chart_data = self.process_transactions_for_chart(all_transactions)
+            
+            # Calculate metrics
+            total_transactions = len(all_transactions)
+            total_faucets = len(all_faucets)
+            total_claims = len(all_claims)
+            total_unique_users = users_chart_data["totalUniqueUsers"]
+            
+            # Store individual datasets
+            await self.store_analytics_data(ANALYTICS_CACHE_KEYS['FAUCETS_DATA'], {
+                "faucets": all_faucets,
+                "total": total_faucets,
+                "chartData": faucets_chart_data
+            })
+            
+            await self.store_analytics_data(ANALYTICS_CACHE_KEYS['TRANSACTIONS_DATA'], {
+                "transactions": all_transactions,
+                "total": total_transactions,
+                "chartData": transactions_chart_data
+            })
+            
+            await self.store_analytics_data(ANALYTICS_CACHE_KEYS['USERS_DATA'], {
+                "users": users_chart_data.get("users", []),
+                "total": total_unique_users,
+                "chartData": users_chart_data["chartData"]
+            })
+            
+            await self.store_analytics_data(ANALYTICS_CACHE_KEYS['CLAIMS_DATA'], {
+                "claims": all_claims,
+                "total": total_claims,
+                "chartData": claims_chart_data["chartData"],
+                "faucetRankings": claims_chart_data["faucetRankings"]
+            })
+            
+            # Store consolidated dashboard data
+            dashboard_data = {
+                "totalTransactions": total_transactions,
+                "totalFaucets": total_faucets,
+                "totalClaims": total_claims,
+                "uniqueUsers": total_unique_users,
+                "networkStats": transactions_chart_data["networkStats"],
+                "lastUpdated": datetime.now().isoformat(),
+                "updateDuration": (datetime.now() - update_start).total_seconds()
+            }
+            
+            await self.store_analytics_data(ANALYTICS_CACHE_KEYS['DASHBOARD_DATA'], dashboard_data)
+            await self.store_analytics_data(ANALYTICS_CACHE_KEYS['LAST_UPDATED'], datetime.now().isoformat())
+            
+            # Update status - completed
+            await self.store_analytics_data(ANALYTICS_CACHE_KEYS['UPDATE_STATUS'], {
+                "updating": False,
+                "completed_at": datetime.now().isoformat(),
+                "duration_seconds": (datetime.now() - update_start).total_seconds(),
+                "message": f"Successfully updated {total_transactions} transactions, {total_faucets} faucets, {total_claims} claims"
+            })
+            
+            self.last_update = datetime.now()
+            
+            print(f"✅ Analytics update completed in {(datetime.now() - update_start).total_seconds():.2f} seconds")
+            
+            return {
+                "success": True,
+                "message": "Analytics data updated successfully",
+                "data": dashboard_data
+            }
+            
+        except Exception as e:
+            print(f"❌ Error updating analytics data: {str(e)}")
+            
+            # Update status - failed
+            await self.store_analytics_data(ANALYTICS_CACHE_KEYS['UPDATE_STATUS'], {
+                "updating": False,
+                "failed_at": datetime.now().isoformat(),
+                "error": str(e),
+                "message": f"Update failed: {str(e)}"
+            })
+            
+            return {
+                "success": False,
+                "message": f"Failed to update analytics data: {str(e)}"
+            }
+            
+        finally:
+            self.is_updating = False
+
+# Initialize the analytics manager
+analytics_manager = AnalyticsDataManager()
+
+# API Endpoints
+@app.post("/analytics/update")
+async def update_analytics_data():
+    """Manually trigger analytics data update"""
+    try:
+        result = await analytics_manager.update_all_analytics_data()
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update analytics: {str(e)}")
+
+@app.get("/analytics/dashboard")
+async def get_dashboard_analytics():
+    """Get cached dashboard analytics data"""
+    try:
+        cached_data = await analytics_manager.get_analytics_data(ANALYTICS_CACHE_KEYS['DASHBOARD_DATA'])
+        
+        if not cached_data:
+            return {
+                "success": False,
+                "message": "No cached data available. Please trigger an update first.",
+                "data": None
+            }
+        
+        return {
+            "success": True,
+            "data": cached_data['data'],
+            "cachedAt": cached_data['updated_at']
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get dashboard data: {str(e)}")
+
+@app.get("/analytics/transactions")
+async def get_transactions_analytics():
+    """Get cached transactions analytics data"""
+    try:
+        cached_data = await analytics_manager.get_analytics_data(ANALYTICS_CACHE_KEYS['TRANSACTIONS_DATA'])
+        
+        if not cached_data:
+            return {
+                "success": False,
+                "message": "No cached transactions data available",
+                "data": None
+            }
+        
+        return {
+            "success": True,
+            "data": cached_data['data'],
+            "cachedAt": cached_data['updated_at']
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get transactions data: {str(e)}")
+
+@app.get("/analytics/faucets")
+async def get_faucets_analytics():
+    """Get cached faucets analytics data"""
+    try:
+        cached_data = await analytics_manager.get_analytics_data(ANALYTICS_CACHE_KEYS['FAUCETS_DATA'])
+        
+        if not cached_data:
+            return {
+                "success": False,
+                "message": "No cached faucets data available",
+                "data": None
+            }
+        
+        return {
+            "success": True,
+            "data": cached_data['data'],
+            "cachedAt": cached_data['updated_at']
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get faucets data: {str(e)}")
+
+@app.get("/analytics/users")
+async def get_users_analytics():
+    """Get cached users analytics data"""
+    try:
+        cached_data = await analytics_manager.get_analytics_data(ANALYTICS_CACHE_KEYS['USERS_DATA'])
+        
+        if not cached_data:
+            return {
+                "success": False,
+                "message": "No cached users data available",
+                "data": None
+            }
+        
+        return {
+            "success": True,
+            "data": cached_data['data'],
+            "cachedAt": cached_data['updated_at']
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get users data: {str(e)}")
+
+@app.get("/analytics/claims")
+async def get_claims_analytics():
+    """Get cached claims analytics data"""
+    try:
+        cached_data = await analytics_manager.get_analytics_data(ANALYTICS_CACHE_KEYS['CLAIMS_DATA'])
+        
+        if not cached_data:
+            return {
+                "success": False,
+                "message": "No cached claims data available",
+                "data": None
+            }
+        
+        return {
+            "success": True,
+            "data": cached_data['data'],
+            "cachedAt": cached_data['updated_at']
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get claims data: {str(e)}")
+
+@app.get("/analytics/status")
+async def get_analytics_status():
+    """Get current analytics update status"""
+    try:
+        status_data = await analytics_manager.get_analytics_data(ANALYTICS_CACHE_KEYS['UPDATE_STATUS'])
+        last_updated = await analytics_manager.get_analytics_data(ANALYTICS_CACHE_KEYS['LAST_UPDATED'])
+        
+        return {
+            "success": True,
+            "status": status_data['data'] if status_data else {"updating": False, "message": "No updates performed yet"},
+            "lastUpdated": last_updated['data'] if last_updated else None,
+            "managerStatus": {
+                "isUpdating": analytics_manager.is_updating,
+                "lastUpdate": analytics_manager.last_update.isoformat() if analytics_manager.last_update else None
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get analytics status: {str(e)}")
+
+# Scheduled update endpoint (for cron jobs)
+@app.post("/analytics/scheduled-update")
+async def scheduled_analytics_update():
+    """Endpoint for scheduled/automated analytics updates"""
+    try:
+        print("🕐 Scheduled analytics update triggered")
+        result = await analytics_manager.update_all_analytics_data()
+        
+        # You could add notification logic here (email, webhook, etc.)
+        
+        return {
+            **result,
+            "type": "scheduled_update",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        print(f"❌ Scheduled update failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Scheduled update failed: {str(e)}")
+
+# Additional utility functions and endpoints...
 def get_chain_info(chain_id: int) -> Dict:
     """Get basic chain information."""
     return CHAIN_INFO.get(chain_id, {"name": "Unknown Network", "native_token": "ETH"})
@@ -1723,6 +2698,61 @@ async def wait_for_transaction_receipt(w3: Web3, tx_hash: str, timeout: int = 30
         await asyncio.sleep(2)
     raise HTTPException(status_code=500, detail=f"Transaction {tx_hash} not mined within {timeout} seconds")
 
+# Basic health check
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+@app.get("/chain-info/{chain_id}")
+async def get_chain_info_endpoint(chain_id: int):
+    """Get chain-specific information."""
+    try:
+        chain_info = get_chain_info(chain_id)
+        return {
+            "success": True,
+            "chain_id": chain_id,
+            "network_name": chain_info["name"],
+            "native_token": chain_info["native_token"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Debug endpoints
+@app.get("/debug/chain-info/{chain_id}")
+async def debug_chain_info(chain_id: int):
+    """Debug endpoint to check basic chain information."""
+    try:
+        chain_info = get_chain_info(chain_id)
+        w3 = await get_web3_instance(chain_id)
+        
+        return {
+            "success": True,
+            "chain_id": chain_id,
+            "network_name": chain_info["name"],
+            "native_token": chain_info["native_token"],
+            "current_gas_price": w3.eth.gas_price,
+            "signer_balance": {
+                "wei": w3.eth.get_balance(signer.address),
+                "formatted": w3.from_wei(w3.eth.get_balance(signer.address), 'ether')
+            },
+            "balance_sufficient": w3.eth.get_balance(signer.address) >= w3.to_wei(0.001, 'ether')
+        }
+        
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/debug/supported-chains")
+async def get_supported_chains():
+    """Debug endpoint to see which chains are supported."""
+    return {
+        "success": True,
+        "valid_chain_ids": VALID_CHAIN_IDS,
+        "chain_info": CHAIN_INFO,
+        "total_supported": len(VALID_CHAIN_IDS)
+    }
+
+# Additional utility functions for the complete backend
+
 async def check_whitelist_status(w3: Web3, faucet_address: str, user_address: str) -> bool:
     faucet_contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
     for _ in range(5):
@@ -1739,7 +2769,7 @@ async def check_pause_status(w3: Web3, faucet_address: str) -> bool:
         return faucet_contract.functions.paused().call()
     except (ContractLogicError, ValueError) as e:
         print(f"Error checking pause status: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to check pause status")
+        raise HTTPException(status_code=500, detail="Failed to check faucet status")
 
 async def check_user_is_authorized_for_faucet(w3: Web3, faucet_address: str, user_address: str) -> bool:
     """
@@ -1782,7 +2812,7 @@ async def check_user_is_authorized_for_faucet(w3: Web3, faucet_address: str, use
         print(f"❌ Error checking authorization: {str(e)}")
         return False
 
-# Task Management Functions (keeping the enhanced version)
+# Task Management Functions
 async def store_faucet_tasks(faucet_address: str, tasks: List[Dict], user_address: str):
     """Store tasks for ANY faucet type in Supabase."""
     try:
@@ -2373,31 +3403,7 @@ async def claim_tokens_custom(w3: Web3, faucet_address: str, user_address: str, 
         print(f"ERROR in claim_tokens_custom: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to claim tokens: {str(e)}")
 
-# Simplified debug endpoints
-@app.get("/debug/chain-info/{chain_id}")
-async def debug_chain_info(chain_id: int):
-    """Debug endpoint to check basic chain information."""
-    try:
-        chain_info = get_chain_info(chain_id)
-        w3 = await get_web3_instance(chain_id)
-        
-        return {
-            "success": True,
-            "chain_id": chain_id,
-            "network_name": chain_info["name"],
-            "native_token": chain_info["native_token"],
-            "current_gas_price": w3.eth.gas_price,
-            "signer_balance": {
-                "wei": w3.eth.get_balance(signer.address),
-                "formatted": w3.from_wei(w3.eth.get_balance(signer.address), 'ether')
-            },
-            "balance_sufficient": w3.eth.get_balance(signer.address) >= w3.to_wei(0.001, 'ether')
-        }
-        
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-# Enhanced set_claim_parameters function for ALL faucet types (keeping only one version)
+# Enhanced set_claim_parameters function for ALL faucet types
 async def set_claim_parameters(faucetAddress: str, start_time: int, end_time: int, tasks: Optional[List[Dict]] = None) -> str:
     try:
         # Generate secret code for dropcode faucets (still needed for dropcode)
@@ -2421,25 +3427,7 @@ async def set_claim_parameters(faucetAddress: str, start_time: int, end_time: in
         print(f"ERROR in set_claim_parameters: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to set parameters: {str(e)}")
 
-# API Endpoints
-@app.get("/health")
-async def health_check():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
-
-@app.get("/chain-info/{chain_id}")
-async def get_chain_info_endpoint(chain_id: int):
-    """Get chain-specific information."""
-    try:
-        chain_info = get_chain_info(chain_id)
-        return {
-            "success": True,
-            "chain_id": chain_id,
-            "network_name": chain_info["name"],
-            "native_token": chain_info["native_token"]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+# API Endpoints for Claims and Tasks
 @app.post("/admin-popup-preference")
 async def save_admin_popup_preference_endpoint(request: AdminPopupPreferenceRequest):
     """Save the admin popup preference for a user-faucet combination."""
@@ -2511,7 +3499,7 @@ async def get_user_admin_popup_preferences_endpoint(userAddress: str):
         print(f"Error in get_user_admin_popup_preferences_endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get preferences: {str(e)}")
 
-# Set claim parameters endpoint for ALL faucet types (keeping only one version)
+# Set claim parameters endpoint for ALL faucet types
 @app.post("/set-claim-parameters")
 async def set_claim_parameters_endpoint(request: SetClaimParametersRequest):
     try:
@@ -3056,7 +4044,7 @@ async def get_secret_code(request: GetSecretCodeRequest):
         print(f"Error in get_secret_code: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve secret code: {str(e)}")
 
-# USDT Functions and Endpoints
+# USDT Functions and Endpoints (keeping existing USDT functionality)
 async def get_usdt_contract_info(w3: Web3, usdt_address: str) -> Dict:
     """Get USDT contract information."""
     try:
@@ -3892,16 +4880,6 @@ async def debug_usdt_info(chainId: int, usdtContractAddress: str):
             "chainId": chainId,
             "contract_address": usdtContractAddress
         }
-
-@app.get("/debug/supported-chains")
-async def get_supported_chains():
-    """Debug endpoint to see which chains are supported."""
-    return {
-        "success": True,
-        "valid_chain_ids": VALID_CHAIN_IDS,
-        "chain_info": CHAIN_INFO,
-        "total_supported": len(VALID_CHAIN_IDS)
-    }
 
 if __name__ == "__main__":
     import uvicorn
