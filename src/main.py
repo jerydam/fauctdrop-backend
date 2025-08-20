@@ -48,7 +48,7 @@ VALID_CHAIN_IDS = [
     62320,  # Custom Network
     1135,   # Lisk
     4202,   # Lisk Testnet
-    8453,   # Base
+    # 8453,   # Base
     84532,  # Base Testnet
     42161,  # Arbitrum One 
     421614, # Arbitrum Sepolia
@@ -103,16 +103,16 @@ ANALYTICS_NETWORKS = [
             "0x0837EACf85472891F350cba74937cB02D90E60A4"
         ]
     },
-    {
-        "chainId": 8453,
-        "name": "Base",
-        "rpcUrl": "https://mainnet.base.org",
-        "factoryAddresses": [
-            "0x945431302922b69D500671201CEE62900624C6d5",
-            "0xda191fb5Ca50fC95226f7FC91C792927FC968CA9",
-            "0x587b840140321DD8002111282748acAdaa8fA206"
-        ]
-    }
+    # {
+    #     "chainId": 8453,
+    #     "name": "Base",
+    #     "rpcUrl": "https://mainnet.base.org",
+    #     "factoryAddresses": [
+    #         "0x945431302922b69D500671201CEE62900624C6d5",
+    #         "0xda191fb5Ca50fC95226f7FC91C792927FC968CA9",
+    #         "0x587b840140321DD8002111282748acAdaa8fA206"
+    #     ]
+    # }
 ]
 
 # Chain configurations for analytics
@@ -133,10 +133,10 @@ CHAIN_CONFIGS = {
         "name": "Lisk",
         "nativeCurrency": {"symbol": "LISK", "decimals": 18}
     },
-    8453: {
-        "name": "Base",
-        "nativeCurrency": {"symbol": "ETH", "decimals": 18}
-    }
+    # 8453: {
+    #     "name": "Base",
+    #     "nativeCurrency": {"symbol": "ETH", "decimals": 18}
+    # }
 }
 
 # Basic ERC20 ABI for token operations
@@ -1801,8 +1801,8 @@ CHAIN_INFO = {
     421614: {"name": "Arbitrum Sepolia", "native_token": "ETH"},
     
     # Base
-    8453: {"name": "Base", "native_token": "ETH"},
-    84532: {"name": "Base Testnet", "native_token": "ETH"},
+    # 8453: {"name": "Base", "native_token": "ETH"},
+    # 84532: {"name": "Base Testnet", "native_token": "ETH"},
     
     # Polygon
     137: {"name": "Polygon Mainnet", "native_token": "MATIC"},
