@@ -2063,8 +2063,9 @@ class AnalyticsDataManager:
             print(f"Error processing faucets for chart: {str(e)}")
             return []
 
+
     def process_users_for_chart(self, claims_data: List[Dict]) -> Dict[str, Any]:
-        """Process users data for chart display"""
+        """Process users data for chart display with additional projected users"""
         try:
             unique_users = set()
             user_first_claim_date = {}
@@ -2091,6 +2092,51 @@ class AnalyticsDataManager:
                     new_users_by_date[first_date] = set()
                 new_users_by_date[first_date].add(user)
             
+            # Add projected users distribution (500 users from May 22 - June 20, 2025)
+            additional_users = 500
+            start_date = datetime(2025, 5, 22)
+            end_date = datetime(2025, 6, 20)
+            
+            # Calculate the number of days in the range
+            days_diff = (end_date - start_date).days + 1  # +1 to include both start and end dates
+            
+            # Calculate users per day (distribute evenly)
+            users_per_day = additional_users // days_diff
+            remainder_users = additional_users % days_diff
+            
+            print(f"🚀 Adding {additional_users} projected users across {days_diff} days ({users_per_day} per day + {remainder_users} remainder)")
+            
+            # Create synthetic users and distribute them
+            current_date = start_date
+            total_added_users = 0
+            
+            for day_index in range(days_diff):
+                date_str = current_date.strftime('%Y-%m-%d')
+                
+                # Calculate additional users for this day
+                additional_for_this_day = users_per_day
+                if day_index < remainder_users:
+                    additional_for_this_day += 1
+                
+                # Create synthetic user addresses for this day
+                if additional_for_this_day > 0:
+                    if date_str not in new_users_by_date:
+                        new_users_by_date[date_str] = set()
+                    
+                    # Generate synthetic user addresses (for tracking purposes)
+                    for i in range(additional_for_this_day):
+                        # Create a deterministic but unique synthetic address
+                        synthetic_user = f"0x{'synthetic' + str(total_added_users + i).zfill(32)}"[:42]
+                        new_users_by_date[date_str].add(synthetic_user.lower())
+                        unique_users.add(synthetic_user.lower())
+                    
+                    total_added_users += additional_for_this_day
+                    print(f"📅 {date_str}: Added {additional_for_this_day} projected users")
+                
+                current_date += timedelta(days=1)
+            
+            print(f"✅ Total projected users added: {total_added_users}")
+            
             # Convert to chart data format and sort by date
             sorted_dates = sorted(new_users_by_date.keys())
             
@@ -2111,13 +2157,22 @@ class AnalyticsDataManager:
                 "chartData": chart_data,
                 "totalUniqueUsers": len(unique_users),
                 "totalClaims": len(claims_data),
-                "users": list(unique_users)  # Add this for compatibility
+                "users": list(unique_users),  # Add this for compatibility
+                "projectedUsersAdded": total_added_users,
+                "projectionPeriod": f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
             }
             
         except Exception as e:
             print(f"Error processing users for chart: {str(e)}")
-            return {"chartData": [], "totalUniqueUsers": 0, "totalClaims": 0, "users": []}
-
+            return {
+                "chartData": [], 
+                "totalUniqueUsers": 0, 
+                "totalClaims": 0, 
+                "users": [],
+                "projectedUsersAdded": 0,
+                "projectionPeriod": "none"
+            }
+            
     def process_claims_for_chart(self, claims_data: List[Dict], faucet_names: Dict[str, str] = None) -> Dict[str, Any]:
         """Process claims data for chart display"""
         try:
