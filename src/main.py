@@ -2182,7 +2182,7 @@ class AnalyticsDataManager:
             claims_by_faucet = {}
             total_claims = len(claims_data)
             
-            # Process all claims
+        
             for claim in claims_data:
                 faucet_address = claim.get('faucetAddress', '').lower()
                 network_name = claim.get('networkName', 'Unknown')
