@@ -4905,6 +4905,17 @@ async def debug_backend_usdt_auth(chainId: int, usdtContractAddress: str):
             "success": False,
             "error": str(e)
         }
+@app.get("/debug/env")
+async def debug_environment():
+    """Debug endpoint to check environment variables (remove in production)"""
+    return {
+        "has_private_key": bool(os.getenv("PRIVATE_KEY")),
+        "has_base_rpc": bool(os.getenv("RPC_URL_8453")),
+        "has_celo_rpc": bool(os.getenv("RPC_URL_42220")),
+        "has_supabase_url": bool(os.getenv("SUPABASE_URL")),
+        "available_rpc_vars": [key for key in os.environ.keys() if key.startswith("RPC_URL")],
+        "port": os.getenv("PORT"),
+    }
 
 @app.get("/debug/usdt-info")
 async def debug_usdt_info(chainId: int, usdtContractAddress: str):
