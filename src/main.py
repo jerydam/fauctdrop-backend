@@ -1688,7 +1688,45 @@ FAUCET_ABI = [
 
 # Initialize signer globally
 signer = Account.from_key(PRIVATE_KEY)
+# Platform owner address
+PLATFORM_OWNER = "0x9fBC2A0de6e5C5Fd96e8D11541608f5F328C0785"
 
+# Droplist-specific models
+class DroplistTask(BaseModel):
+    title: str
+    description: str
+    url: str
+    required: bool = True
+    platform: Optional[str] = None
+    handle: Optional[str] = None
+    action: Optional[str] = "follow"
+    points: int = 100
+    category: str = "social"
+
+class DroplistConfig(BaseModel):
+    isActive: bool
+    title: str
+    description: str
+    requirementThreshold: int = 5
+    maxParticipants: Optional[int] = None
+    endDate: Optional[str] = None
+
+class DroplistConfigRequest(BaseModel):
+    userAddress: str
+    config: DroplistConfig
+    tasks: List[DroplistTask]
+
+class UserProfile(BaseModel):
+    walletAddress: str
+    xAccounts: List[dict] = []
+    completedTasks: List[str] = []
+    droplistStatus: str = "pending"  # pending, eligible, completed
+
+class TaskVerificationRequest(BaseModel):
+    walletAddress: str
+    taskId: str
+    xAccountId: Optional[str] = None
+    
 # Pydantic Models (keeping existing models)
 class ClaimRequest(BaseModel):
     userAddress: str
@@ -1697,7 +1735,12 @@ class ClaimRequest(BaseModel):
     shouldWhitelist: bool = True
     chainId: int
     divviReferralData: Optional[str] = None
-
+    
+class GenerateNewDropCodeRequest(BaseModel):
+    faucetAddress: str
+    userAddress: str
+    chainId: int
+    
 class ClaimNoCodeRequest(BaseModel):
     userAddress: str
     faucetAddress: str
@@ -3481,6 +3524,578 @@ async def set_claim_parameters(faucetAddress: str, start_time: int, end_time: in
     except Exception as e:
         print(f"ERROR in set_claim_parameters: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to set parameters: {str(e)}")
+
+# Helper function to check if user is platform owner
+async def check_platform_owner_authorization(user_address: str) -> bool:
+    """Check if user address is the platform owner"""
+    return user_address.lower() == PLATFORM_OWNER.lower()
+
+async def store_droplist_config(config: DroplistConfig, tasks: List[DroplistTask], user_address: str):
+    """Store droplist configuration in Supabase"""
+    try:
+        # Convert tasks to storage format
+        tasks_data = [task.dict() for task in tasks]
+        
+        data = {
+            "platform_owner": user_address,
+            "config": config.dict(),
+            "tasks": tasks_data,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }
+        
+        # Upsert configuration (replace if exists)
+        response = supabase.table("droplist_config").upsert(
+            data,
+            on_conflict="platform_owner"
+        ).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=500, detail="Failed to store droplist config")
+            
+        print(f"✅ Stored droplist config with {len(tasks)} tasks for owner {user_address}")
+        return response.data[0]
+        
+    except Exception as e:
+        print(f"💥 Database error in store_droplist_config: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+async def get_droplist_config() -> Optional[Dict]:
+    """Get current droplist configuration"""
+    try:
+        response = supabase.table("droplist_config").select("*").eq(
+            "platform_owner", PLATFORM_OWNER
+        ).execute()
+        
+        if response.data and len(response.data) > 0:
+            return response.data[0]
+        
+        return None
+        
+    except Exception as e:
+        print(f"Database error in get_droplist_config: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+async def store_user_profile(profile: UserProfile):
+    """Store or update user profile in Supabase"""
+    try:
+        data = {
+            "wallet_address": profile.walletAddress,
+            "x_accounts": profile.xAccounts,
+            "completed_tasks": profile.completedTasks,
+            "droplist_status": profile.droplistStatus,
+            "updated_at": datetime.now().isoformat()
+        }
+        
+        response = supabase.table("droplist_users").upsert(
+            data,
+            on_conflict="wallet_address"
+        ).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=500, detail="Failed to store user profile")
+            
+        return response.data[0]
+        
+    except Exception as e:
+        print(f"Database error in store_user_profile: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+async def get_user_profile(wallet_address: str) -> Optional[UserProfile]:
+    """Get user profile from Supabase"""
+    try:
+        if not Web3.is_address(wallet_address):
+            return None
+            
+        checksum_address = Web3.to_checksum_address(wallet_address)
+        
+        response = supabase.table("droplist_users").select("*").eq(
+            "wallet_address", checksum_address
+        ).execute()
+        
+        if response.data and len(response.data) > 0:
+            data = response.data[0]
+            return UserProfile(
+                walletAddress=data["wallet_address"],
+                xAccounts=data.get("x_accounts", []),
+                completedTasks=data.get("completed_tasks", []),
+                droplistStatus=data.get("droplist_status", "pending")
+            )
+        
+        return None
+        
+    except Exception as e:
+        print(f"Database error in get_user_profile: {str(e)}")
+        return None
+async def generate_new_drop_code_only(faucet_address: str) -> str:
+    """
+    Generate a new drop code and update it in the database with smart timing logic.
+    If existing code is expired, make new code active immediately.
+    If existing code is still valid, preserve the timing.
+    """
+    try:
+        current_time = int(datetime.now().timestamp())
+        
+        # Get existing secret code data to check timing
+        existing_code_data = await get_secret_code_from_db(faucet_address)
+        
+        if existing_code_data:
+            old_start_time = existing_code_data["start_time"]
+            old_end_time = existing_code_data["end_time"]
+            is_expired = existing_code_data["is_expired"]
+            is_future = existing_code_data["is_future"]
+            
+            print(f"📅 Existing timing: start={old_start_time}, end={old_end_time}, expired={is_expired}, future={is_future}")
+            
+            if is_expired:
+                # Old code is expired - make new code active immediately for 30 days
+                start_time = current_time
+                end_time = current_time + (30 * 24 * 60 * 60)  # 30 days from now
+                print(f"🔄 Old code expired, making new code active immediately until {datetime.fromtimestamp(end_time)}")
+            elif is_future:
+                # Old code hasn't started yet - preserve start time but extend end time if needed
+                start_time = old_start_time
+                # Ensure at least 7 days from start time
+                min_end_time = old_start_time + (7 * 24 * 60 * 60)
+                end_time = max(old_end_time, min_end_time)
+                print(f"⏳ Old code is future, preserving start time {old_start_time}, end time set to {end_time}")
+            else:
+                # Old code is currently valid - preserve existing timing
+                start_time = old_start_time
+                end_time = old_end_time
+                print(f"✅ Old code is valid, preserving existing timing")
+        else:
+            # No existing code - set new timing (active immediately for 30 days)
+            start_time = current_time
+            end_time = current_time + (30 * 24 * 60 * 60)  # 30 days from now
+            print(f"🆕 No existing code, setting new timing: start={start_time}, end={end_time}")
+        
+        # Generate new secret code
+        new_secret_code = await generate_secret_code()
+        
+        # Store the new code with smart timing
+        await store_secret_code(faucet_address, new_secret_code, start_time, end_time)
+        
+        # Verify the new code is properly stored and valid
+        verification = await get_secret_code_from_db(faucet_address)
+        if verification:
+            print(f"✅ New code verification: valid={verification['is_valid']}, expired={verification['is_expired']}")
+        
+        print(f"✅ Generated new drop code for {faucet_address}: {new_secret_code}")
+        print(f"⏰ Active period: {datetime.fromtimestamp(start_time)} to {datetime.fromtimestamp(end_time)}")
+        
+        return new_secret_code
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"ERROR in generate_new_drop_code_only: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate new drop code: {str(e)}")
+
+# Add this new endpoint after the existing secret code endpoints
+@app.post("/generate-new-drop-code")
+async def generate_new_drop_code_endpoint(request: GenerateNewDropCodeRequest):
+    """Generate a new drop code for dropcode faucets (authorized users only)."""
+    try:
+        print(f"🔄 New drop code request: user={request.userAddress}, faucet={request.faucetAddress}")
+        
+        # Validate addresses
+        if not Web3.is_address(request.faucetAddress) or not Web3.is_address(request.userAddress):
+            raise HTTPException(status_code=400, detail="Invalid address format")
+        
+        # Validate chain ID
+        if request.chainId not in VALID_CHAIN_IDS:
+            raise HTTPException(status_code=400, detail=f"Invalid chainId: {request.chainId}")
+        
+        faucet_address = Web3.to_checksum_address(request.faucetAddress)
+        user_address = Web3.to_checksum_address(request.userAddress)
+        
+        # Get Web3 instance
+        w3 = await get_web3_instance(request.chainId)
+        
+        # Check if user is authorized (owner, admin, or backend)
+        is_authorized = await check_user_is_authorized_for_faucet(w3, faucet_address, user_address)
+        if not is_authorized:
+            raise HTTPException(
+                status_code=403, 
+                detail="Access denied. User must be owner, admin, or backend address."
+            )
+        
+        # Additional check: Verify this is actually a dropcode faucet
+        try:
+            # Try to get existing secret code data to confirm this is a dropcode faucet
+            faucet_contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
+            
+            # Check if this faucet has the faucetType function and if it's dropcode
+            try:
+                faucet_type = faucet_contract.functions.faucetType().call()
+                if faucet_type.lower() != 'dropcode':
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"This operation is only available for dropcode faucets. Current type: {faucet_type}"
+                    )
+            except Exception as e:
+                print(f"⚠️ Could not verify faucet type: {str(e)}")
+                # Continue anyway - older contracts might not have faucetType function
+                
+        except Exception as e:
+            print(f"⚠️ Could not verify faucet contract: {str(e)}")
+        
+        # Generate new drop code
+        new_code = await generate_new_drop_code_only(faucet_address)
+        
+        print(f"✅ Successfully generated new drop code for {faucet_address}: {new_code}")
+        
+        return {
+            "success": True,
+            "faucetAddress": faucet_address,
+            "userAddress": user_address,
+            "secretCode": new_code,
+            "chainId": request.chainId,
+            "message": "New drop code generated successfully",
+            "timestamp": datetime.now().isoformat(),
+            "note": "Previous drop code is now invalid"
+        }
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"💥 Error in generate_new_drop_code: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate new drop code: {str(e)}")
+
+# Optional: Add a debug endpoint to check drop code status
+@app.get("/debug/drop-code-status/{faucetAddress}")
+async def debug_drop_code_status(faucetAddress: str):
+    """Debug endpoint to check current drop code status."""
+    try:
+        if not Web3.is_address(faucetAddress):
+            raise HTTPException(status_code=400, detail="Invalid faucet address format")
+        
+        faucet_address = Web3.to_checksum_address(faucetAddress)
+        code_data = await get_secret_code_from_db(faucet_address)
+        
+        if not code_data:
+            return {
+                "success": False,
+                "faucetAddress": faucet_address,
+                "message": "No drop code found for this faucet"
+            }
+        
+        return {
+            "success": True,
+            "faucetAddress": faucet_address,
+            "hasCode": True,
+            "isValid": code_data["is_valid"],
+            "isExpired": code_data["is_expired"],
+            "isFuture": code_data["is_future"],
+            "timeRemaining": code_data["time_remaining"],
+            "startTime": code_data["start_time"],
+            "endTime": code_data["end_time"],
+            "createdAt": code_data.get("created_at"),
+            "code": code_data["secret_code"][:2] + "****"  # Partially hidden for security
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "faucetAddress": faucetAddress
+        }
+# API Endpoints
+
+@app.post("/api/droplist/config")
+async def save_droplist_config(request: DroplistConfigRequest):
+    """Save droplist configuration (platform owner only)"""
+    try:
+        # Validate user is platform owner
+        if not Web3.is_address(request.userAddress):
+            raise HTTPException(status_code=400, detail="Invalid user address")
+        
+        user_address = Web3.to_checksum_address(request.userAddress)
+        
+        if not await check_platform_owner_authorization(user_address):
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied. Only platform owner can manage droplist configuration"
+            )
+        
+        # Store configuration
+        result = await store_droplist_config(request.config, request.tasks, user_address)
+        
+        return {
+            "success": True,
+            "message": f"Droplist configuration saved with {len(request.tasks)} tasks",
+            "data": result
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error saving droplist config: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save configuration: {str(e)}")
+
+@app.get("/api/droplist/config")
+async def get_droplist_config_endpoint():
+    """Get current droplist configuration"""
+    try:
+        config = await get_droplist_config()
+        
+        if not config:
+            return {
+                "success": True,
+                "config": {
+                    "isActive": False,
+                    "title": "Join FaucetDrops Community",
+                    "description": "Complete social media tasks to join our droplist",
+                    "requirementThreshold": 5
+                },
+                "tasks": [],
+                "message": "No configuration found, using defaults"
+            }
+        
+        return {
+            "success": True,
+            "config": config.get("config", {}),
+            "tasks": config.get("tasks", []),
+            "createdAt": config.get("created_at"),
+            "updatedAt": config.get("updated_at")
+        }
+        
+    except Exception as e:
+        print(f"Error getting droplist config: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get configuration: {str(e)}")
+
+@app.get("/api/users/{wallet_address}")
+async def get_user_profile_endpoint(wallet_address: str):
+    """Get user profile"""
+    try:
+        profile = await get_user_profile(wallet_address)
+        
+        if not profile:
+            raise HTTPException(status_code=404, detail="User profile not found")
+        
+        return profile.dict()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting user profile: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get user profile: {str(e)}")
+
+@app.post("/api/users")
+async def create_user_profile_endpoint(profile: UserProfile):
+    """Create new user profile"""
+    try:
+        if not Web3.is_address(profile.walletAddress):
+            raise HTTPException(status_code=400, detail="Invalid wallet address")
+        
+        profile.walletAddress = Web3.to_checksum_address(profile.walletAddress)
+        
+        result = await store_user_profile(profile)
+        
+        return {
+            "success": True,
+            "message": "User profile created",
+            "data": result
+        }
+        
+    except Exception as e:
+        print(f"Error creating user profile: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create user profile: {str(e)}")
+
+@app.post("/api/tasks/verify")
+async def verify_task_endpoint(request: TaskVerificationRequest):
+    """Verify task completion for user"""
+    try:
+        if not Web3.is_address(request.walletAddress):
+            raise HTTPException(status_code=400, detail="Invalid wallet address")
+        
+        wallet_address = Web3.to_checksum_address(request.walletAddress)
+        
+        # Get user profile
+        profile = await get_user_profile(wallet_address)
+        if not profile:
+            # Create new profile
+            profile = UserProfile(walletAddress=wallet_address)
+        
+        # Check if task is already completed
+        if request.taskId in profile.completedTasks:
+            return {
+                "success": True,
+                "completed": True,
+                "message": "Task already completed",
+                "verifiedWith": request.xAccountId
+            }
+        
+        # Here you would implement actual verification logic
+        # For now, we'll simulate verification
+        verification_success = True  # Replace with actual verification
+        
+        if verification_success:
+            profile.completedTasks.append(request.taskId)
+            await store_user_profile(profile)
+        
+        return {
+            "success": True,
+            "completed": verification_success,
+            "message": "Task verified successfully" if verification_success else "Verification failed",
+            "verifiedWith": request.xAccountId if verification_success else None
+        }
+        
+    except Exception as e:
+        print(f"Error verifying task: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Task verification failed: {str(e)}")
+
+@app.post("/api/tasks/verify-all")
+async def verify_all_tasks_endpoint(request: dict):
+    """Verify all tasks for a user"""
+    try:
+        wallet_address = request.get("walletAddress")
+        if not wallet_address or not Web3.is_address(wallet_address):
+            raise HTTPException(status_code=400, detail="Invalid wallet address")
+        
+        wallet_address = Web3.to_checksum_address(wallet_address)
+        
+        # Get droplist config to check tasks
+        config = await get_droplist_config()
+        if not config:
+            raise HTTPException(status_code=404, detail="No droplist configuration found")
+        
+        # Get user profile
+        profile = await get_user_profile(wallet_address)
+        if not profile:
+            raise HTTPException(status_code=404, detail="User profile not found")
+        
+        tasks = config.get("tasks", [])
+        completed_count = len(profile.completedTasks)
+        requirement_threshold = config.get("config", {}).get("requirementThreshold", 5)
+        
+        return {
+            "success": True,
+            "completedTasks": completed_count,
+            "totalTasks": len(tasks),
+            "requirementMet": completed_count >= requirement_threshold,
+            "message": f"User has completed {completed_count}/{len(tasks)} tasks"
+        }
+        
+    except Exception as e:
+        print(f"Error verifying all tasks: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Task verification failed: {str(e)}")
+
+@app.post("/api/droplist/submit")
+async def submit_to_droplist_endpoint(request: dict):
+    """Submit user to droplist"""
+    try:
+        wallet_address = request.get("walletAddress")
+        if not wallet_address or not Web3.is_address(wallet_address):
+            raise HTTPException(status_code=400, detail="Invalid wallet address")
+        
+        wallet_address = Web3.to_checksum_address(wallet_address)
+        
+        # Get droplist config
+        config = await get_droplist_config()
+        if not config:
+            raise HTTPException(status_code=404, detail="No droplist configuration found")
+        
+        droplist_config = config.get("config", {})
+        if not droplist_config.get("isActive", False):
+            raise HTTPException(status_code=400, detail="Droplist is not currently active")
+        
+        # Get user profile
+        profile = await get_user_profile(wallet_address)
+        if not profile:
+            raise HTTPException(status_code=404, detail="User profile not found")
+        
+        # Check if user meets requirements
+        completed_count = len(profile.completedTasks)
+        requirement_threshold = droplist_config.get("requirementThreshold", 5)
+        
+        if completed_count < requirement_threshold:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Not eligible. Completed {completed_count}/{requirement_threshold} required tasks"
+            )
+        
+        # Check if already completed
+        if profile.droplistStatus == "completed":
+            return {
+                "success": True,
+                "message": "User already in droplist",
+                "alreadySubmitted": True
+            }
+        
+        # Update user status
+        profile.droplistStatus = "completed"
+        await store_user_profile(profile)
+        
+        # Here you could add logic to:
+        # - Send confirmation email
+        # - Add to external mailing list
+        # - Trigger Discord/Telegram notifications
+        
+        return {
+            "success": True,
+            "message": "Successfully added to droplist",
+            "completedTasks": completed_count,
+            "status": "completed"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error submitting to droplist: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Droplist submission failed: {str(e)}")
+
+@app.get("/api/droplist/stats")
+async def get_droplist_stats():
+    """Get droplist statistics"""
+    try:
+        # Get all users
+        response = supabase.table("droplist_users").select("*").execute()
+        users = response.data or []
+        
+        total_users = len(users)
+        completed_users = len([u for u in users if u.get("droplist_status") == "completed"])
+        pending_users = total_users - completed_users
+        
+        # Get configuration
+        config = await get_droplist_config()
+        is_active = config.get("config", {}).get("isActive", False) if config else False
+        
+        return {
+            "success": True,
+            "stats": {
+                "totalUsers": total_users,
+                "completedUsers": completed_users,
+                "pendingUsers": pending_users,
+                "isActive": is_active,
+                "totalTasks": len(config.get("tasks", [])) if config else 0
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error getting droplist stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
+
+# X Account management endpoints (placeholder - implement OAuth flow)
+@app.post("/api/x-accounts/auth/initiate")
+async def initiate_x_auth(request: dict):
+    """Initiate X OAuth flow"""
+    # Implement X OAuth initiation
+    # This would typically involve generating OAuth tokens and redirecting to X
+    return {
+        "authUrl": "https://api.twitter.com/oauth/authenticate?oauth_token=example",
+        "state": "example_state"
+    }
+
+@app.put("/api/x-accounts/{account_id}")
+async def update_x_account(account_id: str, request: dict):
+    """Update X account status"""
+    # Implement X account status update
+    return {
+        "success": True,
+        "message": "Account status updated"
+    }
 
 # API Endpoints for Claims and Tasks
 @app.post("/admin-popup-preference")
