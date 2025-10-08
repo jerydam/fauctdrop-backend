@@ -1726,7 +1726,14 @@ class TaskVerificationRequest(BaseModel):
     walletAddress: str
     taskId: str
     xAccountId: Optional[str] = None
-    
+
+class CustomXPostTemplate(BaseModel):
+    faucetAddress: str
+    template: str
+    userAddress: str
+    chainId: int
+
+
 # Pydantic Models (keeping existing models)
 class ClaimRequest(BaseModel):
     userAddress: str
@@ -3691,7 +3698,131 @@ async def generate_new_drop_code_only(faucet_address: str) -> str:
     except Exception as e:
         print(f"ERROR in generate_new_drop_code_only: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate new drop code: {str(e)}")
+@app.post("/faucet-x-template")
+async def save_faucet_x_template(request: CustomXPostTemplate):
+    """Save custom X post template for a faucet"""
+    try:
+        if not Web3.is_address(request.faucetAddress):
+            raise HTTPException(status_code=400, detail="Invalid faucet address")
+        
+        faucet_address = Web3.to_checksum_address(request.faucetAddress)
+        user_address = Web3.to_checksum_address(request.userAddress)
+        
+        # Validate user is authorized (similar to add-faucet-tasks)
+        w3 = await get_web3_instance(request.chainId)
+        is_authorized = await check_user_is_authorized_for_faucet(w3, faucet_address, user_address)
+        
+        if not is_authorized:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied. User must be owner, admin, or backend address."
+            )
+        
+        data = {
+            "faucet_address": faucet_address,
+            "x_post_template": request.template,
+            "created_by": user_address,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }
+        
+        # Upsert template
+        response = supabase.table("faucet_x_templates").upsert(
+            data,
+            on_conflict="faucet_address"
+        ).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=500, detail="Failed to store X post template")
+        
+        print(f"✅ Stored X post template for faucet {faucet_address}")
+        
+        return {
+            "success": True,
+            "faucetAddress": faucet_address,
+            "message": "X post template saved successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"💥 Error saving X post template: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save template: {str(e)}")
 
+@app.get("/faucet-x-template/{faucetAddress}")
+async def get_faucet_x_template(faucetAddress: str):
+    """Get custom X post template for a faucet"""
+    try:
+        if not Web3.is_address(faucetAddress):
+            raise HTTPException(status_code=400, detail="Invalid faucet address")
+        
+        faucet_address = Web3.to_checksum_address(faucetAddress)
+        
+        response = supabase.table("faucet_x_templates").select("*").eq(
+            "faucet_address", faucet_address
+        ).execute()
+        
+        if response.data and len(response.data) > 0:
+            return {
+                "success": True,
+                "faucetAddress": faucet_address,
+                "template": response.data[0]["x_post_template"],
+                "createdBy": response.data[0].get("created_by"),
+                "createdAt": response.data[0].get("created_at"),
+                "updatedAt": response.data[0].get("updated_at")
+            }
+        
+        # Return default template if none exists
+        return {
+            "success": True,
+            "faucetAddress": faucet_address,
+            "template": None,
+            "message": "No custom template found, will use default"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"💥 Error getting X post template: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get template: {str(e)}")
+
+@app.delete("/faucet-x-template/{faucetAddress}")
+async def delete_faucet_x_template(faucetAddress: str, userAddress: str, chainId: int):
+    """Delete custom X post template for a faucet"""
+    try:
+        if not Web3.is_address(faucetAddress) or not Web3.is_address(userAddress):
+            raise HTTPException(status_code=400, detail="Invalid address format")
+        
+        faucet_address = Web3.to_checksum_address(faucetAddress)
+        user_address = Web3.to_checksum_address(userAddress)
+        
+        # Validate user is authorized
+        w3 = await get_web3_instance(chainId)
+        is_authorized = await check_user_is_authorized_for_faucet(w3, faucet_address, user_address)
+        
+        if not is_authorized:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied. User must be owner, admin, or backend address."
+            )
+        
+        response = supabase.table("faucet_x_templates").delete().eq(
+            "faucet_address", faucet_address
+        ).execute()
+        
+        return {
+            "success": True,
+            "faucetAddress": faucet_address,
+            "message": "X post template deleted successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"💥 Error deleting X post template: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete template: {str(e)}")
+
+        
 # Add this new endpoint after the existing secret code endpoints
 @app.post("/generate-new-drop-code")
 async def generate_new_drop_code_endpoint(request: GenerateNewDropCodeRequest):
