@@ -747,6 +747,25 @@ FAUCET_ABI = [
 		"name": "ClaimParametersUpdated",
 		"type": "event"
 	},
+    {
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "user",
+				"type": "address"
+			}
+		],
+		"name": "hasCustomClaimAmount",
+		"outputs": [
+			{
+				"internalType": "bool",
+				"name": "",
+				"type": "bool"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
 	{
 		"anonymous": False,
 		"inputs": [
