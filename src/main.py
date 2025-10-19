@@ -1,5 +1,8 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import UploadFile, File
+import uuid
+import mimetypes
 from pydantic import BaseModel
 from web3 import Web3
 from typing import Dict, Tuple, List, Optional, Any
@@ -1855,6 +1858,18 @@ class SocialMediaLink(BaseModel):
     handle: str
     action: str
 
+class ImageUploadResponse(BaseModel):
+    success: bool
+    imageUrl: str
+    message: str
+
+class FaucetMetadata(BaseModel):
+    faucetAddress: str
+    description: str
+    imageUrl: Optional[str] = None
+    createdBy: str
+    chainId: int
+
 # CHAIN CONFIGURATION
 CHAIN_INFO = {
     # Ethereum
@@ -2566,6 +2581,86 @@ class AnalyticsDataManager:
             
         finally:
             self.is_updating = False
+
+# Image upload endpoint using Supabase Storage
+@app.post("/upload-image", response_model=ImageUploadResponse)
+async def upload_faucet_image(file: UploadFile = File(...)):
+    """Upload faucet image to Supabase Storage"""
+    try:
+        # Validate file type
+        allowed_types = ["image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp"]
+        if file.content_type not in allowed_types:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid file type. Allowed types: {', '.join(allowed_types)}"
+            )
+        
+        # Read file content
+        contents = await file.read()
+        
+        # Validate file size (5MB max)
+        max_size = 5 * 1024 * 1024  # 5MB
+        if len(contents) > max_size:
+            raise HTTPException(
+                status_code=400, 
+                detail="File too large. Maximum size is 5MB"
+            )
+        
+        # Generate unique filename
+        file_extension = file.filename.split(".")[-1] if "." in file.filename else "png"
+        unique_filename = f"faucet-images/{uuid.uuid4()}.{file_extension}"
+        
+        # Upload to Supabase Storage
+        response = supabase.storage.from_("faucet-assets").upload(
+            path=unique_filename,
+            file=contents,
+            file_options={
+                "content-type": file.content_type,
+                "cache-control": "3600",
+                "upsert": "false"
+            }
+        )
+        
+        # Get public URL
+        public_url = supabase.storage.from_("faucet-assets").get_public_url(unique_filename)
+        
+        print(f"✅ Uploaded image: {unique_filename}")
+        
+        return {
+            "success": True,
+            "imageUrl": public_url,
+            "message": "Image uploaded successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"💥 Error uploading image: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}")
+
+# Optional: Endpoint to delete an image
+@app.delete("/delete-image")
+async def delete_faucet_image(image_url: str):
+    """Delete faucet image from Supabase Storage"""
+    try:
+        # Extract filename from URL
+        # URL format: https://[project].supabase.co/storage/v1/object/public/faucet-assets/faucet-images/[uuid].[ext]
+        filename = image_url.split("/faucet-assets/")[-1]
+        
+        # Delete from Supabase Storage
+        response = supabase.storage.from_("faucet-assets").remove([filename])
+        
+        print(f"✅ Deleted image: {filename}")
+        
+        return {
+            "success": True,
+            "message": "Image deleted successfully"
+        }
+        
+    except Exception as e:
+        print(f"💥 Error deleting image: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete image: {str(e)}")
+
 
 # Initialize the analytics manager
 analytics_manager = AnalyticsDataManager()
@@ -5585,6 +5680,122 @@ async def transfer_all_usdt_endpoint(
         print(f"Error in quick transfer: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to transfer USDT: {str(e)}")
 
+@app.post("/faucet-metadata")
+async def save_faucet_metadata(metadata: FaucetMetadata):
+    """Save faucet description and image"""
+    try:
+        print(f"\n{'='*60}")
+        print(f"📥 Received metadata request:")
+        print(f"  Faucet: {metadata.faucetAddress}")
+        print(f"  Description: {metadata.description[:50]}..." if len(metadata.description) > 50 else f"  Description: {metadata.description}")
+        print(f"  Image URL: {metadata.imageUrl}")
+        print(f"  Creator: {metadata.createdBy}")
+        print(f"  Chain ID: {metadata.chainId}")
+        print(f"{'='*60}\n")
+        
+        # Validate addresses
+        if not Web3.is_address(metadata.faucetAddress):
+            raise HTTPException(status_code=400, detail="Invalid faucet address")
+        
+        if not Web3.is_address(metadata.createdBy):
+            raise HTTPException(status_code=400, detail="Invalid creator address")
+        
+        faucet_address = Web3.to_checksum_address(metadata.faucetAddress)
+        creator_address = Web3.to_checksum_address(metadata.createdBy)
+        
+        # Prepare data - ✅ FIXED: Use created_by to match database column name
+        data = {
+            "faucet_address": faucet_address,
+            "description": metadata.description,
+            "image_url": metadata.imageUrl,
+            "created_by": creator_address,  # ✅ Changed to created_by
+            "chain_id": metadata.chainId,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }
+        
+        print(f"📝 Prepared data for Supabase:")
+        print(f"  {data}\n")
+        
+        # Insert or update
+        try:
+            response = supabase.table("faucet_metadata").upsert(
+                data,
+                on_conflict="faucet_address"
+            ).execute()
+            
+            print(f"✅ Supabase response:")
+            print(f"  Data: {response.data}")
+            
+        except Exception as db_error:
+            print(f"❌ Database error: {str(db_error)}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Database error: {str(db_error)}"
+            )
+        
+        if not response.data:
+            print(f"⚠️ Warning: No data returned from upsert")
+        
+        print(f"✅ Metadata stored successfully for {faucet_address}\n")
+        
+        return {
+            "success": True,
+            "faucetAddress": faucet_address,
+            "message": "Faucet metadata saved successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"💥 Unexpected error saving faucet metadata: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to save metadata: {str(e)}"
+        )
+
+@app.get("/faucet-metadata/{faucetAddress}")
+async def get_faucet_metadata(faucetAddress: str):
+    """Get faucet description and image"""
+    try:
+        if not Web3.is_address(faucetAddress):
+            raise HTTPException(status_code=400, detail="Invalid faucet address")
+        
+        faucet_address = Web3.to_checksum_address(faucetAddress)
+        
+        response = supabase.table("faucet_metadata").select("*").eq(
+            "faucet_address", faucet_address
+        ).execute()
+        
+        if response.data and len(response.data) > 0:
+            return {
+                "success": True,
+                "faucetAddress": faucet_address,
+                "description": response.data[0].get("description"),
+                "imageUrl": response.data[0].get("image_url"),
+                "createdBy": response.data[0].get("created_by"),  # ✅ Changed to created_by
+                "chainId": response.data[0].get("chain_id"),
+                "createdAt": response.data[0].get("created_at"),
+                "updatedAt": response.data[0].get("updated_at")
+            }
+        
+        return {
+            "success": True,
+            "faucetAddress": faucet_address,
+            "description": None,
+            "imageUrl": None,
+            "message": "No metadata found for this faucet"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"💥 Error getting faucet metadata: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get metadata: {str(e)}")       
 # Scheduled task endpoint (can be called by cron jobs)
 @app.post("/scheduled-usdt-check")
 async def scheduled_usdt_check(
@@ -5714,4 +5925,4 @@ async def debug_usdt_info(chainId: int, usdtContractAddress: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=10000)    
+    uvicorn.run(app, host="0.0.0.0", port=8000)    
