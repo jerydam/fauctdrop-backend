@@ -1,8 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import UploadFile, File
-import uuid
-import mimetypes
 from pydantic import BaseModel
 from web3 import Web3
 from typing import Dict, Tuple, List, Optional, Any
@@ -13,12 +11,14 @@ import sys
 import os
 import asyncio
 import secrets
-import json  # Added missing import
+import json  
 from datetime import datetime, timedelta
 from supabase import create_client, Client
 from config import PRIVATE_KEY, get_rpc_url
 from decimal import Decimal
 import logging
+import uuid
+from ethers import ZeroAddress # Placeholder for ethers.ZeroAddress 
 
 # Add parent directory to sys.path for config import
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -30,7 +30,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Adjust for production
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "OPTIONS", "PUT", "DELETE"], # Added PUT/DELETE for task management
     allow_headers=["Content-Type"],
 )
 
@@ -45,17 +45,18 @@ supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_
 
 # SYNCED CHAIN IDS - Must match frontend exactly
 VALID_CHAIN_IDS = [
-    1,      # Ethereum Mainnet
-    42220,  # Celo Mainnet  
-    44787,  # Celo Testnet
-    62320,  # Custom Network
-    1135,   # Lisk
-    4202,   # Lisk Testnet
-    8453,   # Base
-    84532,  # Base Testnet
-    42161,  # Arbitrum One 
-    421614, # Arbitrum Sepolia
-    137,    # Polygon Mainnet
+    1,       # Ethereum Mainnet
+    42220,   # Celo Mainnet  
+    44787,   # Celo Testnet
+    62320,   # Custom Network
+    1135,    # Lisk
+    4202,    # Lisk Testnet
+    8453,    # Base
+    84532,   # Base Testnet
+    42161,   # Arbitrum One  
+    421614,  # Arbitrum Sepolia
+    137,     # Polygon Mainnet
+    80001,   # Polygon Mumbai (Added for consistency)
 ]
 
 # Analytics cache storage keys
@@ -69,7 +70,7 @@ ANALYTICS_CACHE_KEYS = {
     'UPDATE_STATUS': 'analytics_update_status'
 }
 
-# Analytics networks configuration
+# Analytics networks configuration (kept for analytics engine compatibility)
 ANALYTICS_NETWORKS = [
     {
         "chainId": 42220,
@@ -85,7 +86,7 @@ ANALYTICS_NETWORKS = [
         ]
     },
     {
-        "chainId": 42161, 
+        "chainId": 42161,  
         "name": "Arbitrum",
         "rpcUrl": "https://arb1.arbitrum.io/rpc",
         "factoryAddresses": [
@@ -96,7 +97,7 @@ ANALYTICS_NETWORKS = [
     },
     {
         "chainId": 1135,
-        "name": "Lisk", 
+        "name": "Lisk",  
         "rpcUrl": "https://rpc.api.lisk.com",
         "factoryAddresses": [
             "0x96E9911df17e94F7048cCbF7eccc8D9b5eDeCb5C",
@@ -533,7 +534,7 @@ USDT_MANAGEMENT_ABI = [
     }
 ]
 
-# Full Faucet ABI (keeping existing - this is used for actual faucet operations)
+# Full Faucet ABI 
 FAUCET_ABI = [
 	{
 		"inputs": [
@@ -750,7 +751,7 @@ FAUCET_ABI = [
 		"name": "ClaimParametersUpdated",
 		"type": "event"
 	},
-    {
+	{
 		"inputs": [
 			{
 				"internalType": "address",
@@ -1713,7 +1714,51 @@ signer = Account.from_key(PRIVATE_KEY)
 # Platform owner address
 PLATFORM_OWNER = "0x9fBC2A0de6e5C5Fd96e8D11541608f5F328C0785"
 
-# Droplist-specific models
+# --- NEW QUEST PYDANTIC MODELS ---
+
+# 1. Enhanced Task Model (aligns with frontend structure)
+class QuestTask(BaseModel):
+    id: str # Added ID from frontend
+    title: str
+    description: str
+    points: int = 100
+    required: bool = True
+    category: str = "social" 
+    url: str
+    action: str
+    verificationType: str # auto_social, manual_link, auto_tx, etc.
+    targetPlatform: Optional[str] = None
+    targetHandle: Optional[str] = None
+    targetContractAddress: Optional[str] = None
+    targetChainId: Optional[str] = None
+
+# 2. Main Quest Model
+class Quest(BaseModel):
+    # Quest Metadata
+    creatorAddress: str
+    title: str
+    description: str
+    isActive: bool = True
+    rewardPool: str
+    startDate: str
+    endDate: str
+    tasks: List[QuestTask]
+    
+    # Faucet/Reward Parameters (Passed from Frontend after deployment)
+    faucetAddress: str # REQUIRED: The address deployed by the frontend
+    rewardTokenType: str # native or erc20
+    tokenAddress: str # 0x0 or ERC20 address
+
+# 3. Model for Finalizing Rewards (Admin Action)
+class FinalizeRewardsRequest(BaseModel):
+    adminAddress: str # Address initiating the action (for auth)
+    faucetAddress: str
+    chainId: int
+    winners: List[str] # List of winner addresses
+    amounts: List[int] # List of corresponding reward amounts (in Wei/Token Units)
+
+
+# Droplist-specific models (kept for compatibility)
 class DroplistTask(BaseModel):
     title: str
     description: str
@@ -1902,10 +1947,10 @@ CHAIN_INFO = {
 }
 
 USDT_CONTRACTS = {
-    42220: "0x7F561a9b25dC8a547deC3ca8D851CcC4A54e5665",   # Celo Mainnet (example)
+    42220: "0x7F561a9b25dC8a547deC3ca8D851CcC4A54e5665",    # Celo Mainnet (example)
 }
 
-# Enhanced Analytics Data Manager (keeping only one class)
+# Enhanced Analytics Data Manager 
 class AnalyticsDataManager:
     def __init__(self):
         self.is_updating = False
@@ -2006,7 +2051,7 @@ class AnalyticsDataManager:
                     code = w3.eth.get_code(factory_address)
                     if code == "0x":
                         continue
-                    
+                        
                     # Get all faucets
                     faucets = factory_contract.functions.getAllFaucets().call()
                     
@@ -2034,7 +2079,7 @@ class AnalyticsDataManager:
                         except Exception as e:
                             print(f"⚠️ Error processing faucet {faucet_address}: {str(e)}")
                             continue
-                    
+                        
                     print(f"✅ Got {len(faucets)} faucets from factory {factory_address}")
                     
                 except Exception as e:
@@ -2073,7 +2118,7 @@ class AnalyticsDataManager:
                     code = w3.eth.get_code(factory_address)
                     if code == "0x":
                         continue
-                    
+                        
                     # Get all transactions
                     transactions = factory_contract.functions.getAllTransactions().call()
                     
@@ -2094,7 +2139,7 @@ class AnalyticsDataManager:
                                 token_info = await self.get_token_info(token_address, w3, network['chainId'], False)
                             except:
                                 pass
-                        
+                            
                         all_transactions.append({
                             "faucetAddress": tx[0],
                             "transactionType": tx[1],
@@ -2216,7 +2261,7 @@ class AnalyticsDataManager:
                     
                     total_added_users += additional_for_this_day
                     print(f"📅 {date_str}: Added {additional_for_this_day} projected users")
-                
+                    
                 current_date += timedelta(days=1)
             
             print(f"✅ Total projected users added: {total_added_users}")
@@ -2249,9 +2294,9 @@ class AnalyticsDataManager:
         except Exception as e:
             print(f"Error processing users for chart: {str(e)}")
             return {
-                "chartData": [], 
-                "totalUniqueUsers": 0, 
-                "totalClaims": 0, 
+                "chartData": [],  
+                "totalUniqueUsers": 0,  
+                "totalClaims": 0,  
                 "users": [],
                 "projectedUsersAdded": 0,
                 "projectionPeriod": "none"
@@ -2377,7 +2422,7 @@ class AnalyticsDataManager:
             network_colors = {
                 "Celo": "#35D07F",
                 "Lisk": "#0D4477",
-                "Base": "#0052FF", 
+                "Base": "#0052FF",  
                 "Arbitrum": "#28A0F0",
                 "Ethereum": "#627EEA",
                 "Polygon": "#8247E5",
@@ -4342,6 +4387,138 @@ async def update_x_account(account_id: str, request: dict):
         "message": "Account status updated"
     }
 
+# --- NEW QUEST MANAGEMENT ENDPOINTS ---
+
+@app.post("/api/quests")
+async def save_quest(request: Quest):
+    """
+    Saves the entire Quest configuration to the database.
+    (Called by frontend AFTER Custom Faucet contract deployment).
+    """
+    try:
+        # 1. Validation
+        if not Web3.is_address(request.creatorAddress) or not Web3.is_address(request.faucetAddress):
+            raise HTTPException(status_code=400, detail="Invalid address format for creator or faucet.")
+        
+        faucet_address_cs = Web3.to_checksum_address(request.faucetAddress)
+        
+        # 2. Prepare data for Supabase (use faucet_address as the unique key)
+        quest_data = request.dict()
+        quest_data['faucet_address'] = faucet_address_cs
+        quest_data['created_at'] = datetime.now().isoformat()
+        quest_data['updated_at'] = datetime.now().isoformat()
+
+        # 3. Store in Supabase ('quests' table assumed)
+        response = supabase.table("quests").upsert(
+            quest_data,
+            on_conflict="faucet_address"
+        ).execute()
+
+        if not response.data:
+            raise HTTPException(status_code=500, detail="Failed to save quest data.")
+        
+        print(f"✅ Saved Quest: '{request.title}'. Faucet: {faucet_address_cs}")
+        
+        return {
+            "success": True,
+            "message": "Quest and Faucet metadata saved successfully.",
+            "faucetAddress": faucet_address_cs
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"💥 Error saving quest: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save quest: {str(e)}")
+
+
+@app.post("/admin/finalize-rewards")
+async def finalize_rewards(request: FinalizeRewardsRequest):
+    """
+    ADMIN ENDPOINT: Sets custom reward amounts in the Custom Faucet contract for a batch of winners.
+    Requires backend signer (PRIVATE_KEY) to be an Admin or Owner of the Faucet.
+    """
+    if len(request.winners) != len(request.amounts):
+        raise HTTPException(status_code=400, detail="Winners and amounts lists must be of the same length.")
+    
+    if not request.winners:
+        return {"success": True, "message": "No winners provided, nothing to do."}
+
+    print(f"\n{'='*60}")
+    print(f"🏆 Finalizing rewards for Faucet: {request.faucetAddress}")
+    print(f"🔗 Chain ID: {request.chainId}")
+    print(f"👤 Admin Address: {request.adminAddress}")
+    print(f"{'='*60}\n")
+
+    try:
+        faucet_address = Web3.to_checksum_address(request.faucetAddress)
+        
+        # 1. Initialize Web3 and check signer balance
+        w3 = await get_web3_instance(request.chainId)
+        balance_ok, balance_error = check_sufficient_balance(w3, signer.address, 0.001)
+        if not balance_ok:
+            raise HTTPException(status_code=500, detail=f"Backend gas check failed: {balance_error}")
+        
+        # 2. Authorization Check (Backend must be Admin or Owner on the Faucet)
+        is_authorized_on_chain = await check_user_is_authorized_for_faucet(w3, faucet_address, signer.address)
+        if not is_authorized_on_chain:
+            raise HTTPException(
+                status_code=403, 
+                detail="Backend signer is not authorized (Owner/Admin) on the Faucet contract to set custom amounts. Fund the Faucet owner/admin role."
+            )
+
+        # 3. Prepare data for contract call
+        winner_addresses = [w3.to_checksum_address(addr) for addr in request.winners]
+        # Amounts are assumed to be in Wei/Token lowest denomination (int)
+        reward_amounts_wei = [int(amount) for amount in request.amounts]
+        
+        # 4. Interact with Faucet contract to set batch rewards
+        faucet_contract = w3.eth.contract(address=faucet_address, abi=FAUCET_ABI)
+        
+        print("🛠️ Building transaction: setCustomClaimAmountsBatch...")
+        
+        set_amounts_func = faucet_contract.functions.setCustomClaimAmountsBatch(
+            winner_addresses, 
+            reward_amounts_wei
+        )
+        
+        tx = build_transaction_with_standard_gas(w3, set_amounts_func, signer.address)
+        
+        # 5. Sign and Send
+        signed_tx = w3.eth.account.sign_transaction(tx, signer.key)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        
+        print(f"📡 Transaction sent: {tx_hash.hex()}. Waiting for receipt...")
+        
+        # 6. Wait for Receipt
+        receipt = await wait_for_transaction_receipt(w3, tx_hash.hex())
+        
+        if receipt.get('status', 0) != 1:
+            try:
+                w3.eth.call(tx, block_identifier=receipt['blockNumber'])
+            except Exception as revert_error:
+                raise HTTPException(status_code=400, detail=f"Reward transaction failed: {str(revert_error)}")
+            
+            raise HTTPException(status_code=400, detail=f"Reward transaction failed (status=0): {tx_hash.hex()}")
+        
+        print(f"✅ Rewards successfully set on chain for {len(request.winners)} winners. Tx Hash: {tx_hash.hex()}")
+
+        # 7. Optional: Update quest status in Supabase 
+        # (Implement a quest status update here if necessary)
+        
+        return {
+            "success": True,
+            "message": f"Successfully set custom claim amounts for {len(request.winners)} winners. Users can now claim.",
+            "txHash": tx_hash.hex(),
+            "faucetAddress": faucet_address
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"💥 Fatal error finalizing rewards: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to finalize rewards: {str(e)}")
+
 # API Endpoints for Claims and Tasks
 @app.post("/admin-popup-preference")
 async def save_admin_popup_preference_endpoint(request: AdminPopupPreferenceRequest):
@@ -4439,7 +4616,7 @@ async def set_claim_parameters_endpoint(request: SetClaimParametersRequest):
         secret_code = await set_claim_parameters(faucet_address, request.startTime, request.endTime, tasks_dict)
         
         return {
-            "success": True, 
+            "success": True,  
             "secretCode": secret_code,
             "tasksStored": len(tasks_dict) if tasks_dict else 0,
             "faucetAddress": faucet_address,
@@ -4476,7 +4653,7 @@ async def get_secret_code_for_admin_endpoint(request: GetSecretCodeForAdminReque
         is_authorized = await check_user_is_authorized_for_faucet(w3, faucet_address, user_address)
         if not is_authorized:
             raise HTTPException(
-                status_code=403, 
+                status_code=403,  
                 detail="Access denied. User must be owner, admin, or backend address."
             )
         
@@ -4485,7 +4662,7 @@ async def get_secret_code_for_admin_endpoint(request: GetSecretCodeForAdminReque
         
         if not code_data:
             raise HTTPException(
-                status_code=404, 
+                status_code=404,  
                 detail=f"No secret code found for faucet: {faucet_address}"
             )
         
@@ -4536,7 +4713,7 @@ async def add_faucet_tasks_endpoint(request: AddTasksRequest):
         is_authorized = await check_user_is_authorized_for_faucet(w3, faucet_address, user_address)
         if not is_authorized:
             raise HTTPException(
-                status_code=403, 
+                status_code=403,  
                 detail="Access denied. User must be owner, admin, or backend address."
             )
         
@@ -4627,7 +4804,7 @@ async def delete_faucet_tasks_endpoint(faucetAddress: str, userAddress: str, cha
         is_authorized = await check_user_is_authorized_for_faucet(w3, faucet_address, user_address)
         if not is_authorized:
             raise HTTPException(
-                status_code=403, 
+                status_code=403,  
                 detail="Access denied. User must be owner, admin, or backend address."
             )
         
@@ -4840,6 +5017,10 @@ async def claim_custom(request: ClaimCustomRequest):
                 raise HTTPException(status_code=400, detail="No custom claim amount allocated for this address")
             
             custom_amount = faucet_contract.functions.getCustomClaimAmount(user_address).call()
+            if custom_amount <= 0:
+                print(f"❌ Custom amount is zero: {user_address}")
+                raise HTTPException(status_code=400, detail="Custom claim amount is zero")
+                
             print(f"✅ User has custom amount: {w3.from_wei(custom_amount, 'ether')} tokens")
         except HTTPException:
             raise
@@ -5157,7 +5338,7 @@ async def transfer_usdt_tokens(
         
         # Check current USDT balance
         current_balance = usdt_contract.functions.balanceOf(signer.address).call()
-        current_balance_formatted = w3.from_wei(current_balance, 'ether') if decimals == 18 else current_balance / (10 ** decimals)
+        current_balance_formatted = current_balance / (10 ** decimals)
         
         print(f"💰 Current {symbol} balance: {current_balance_formatted}")
         
@@ -5732,7 +5913,7 @@ async def save_faucet_metadata(metadata: FaucetMetadata):
             import traceback
             traceback.print_exc()
             raise HTTPException(
-                status_code=500, 
+                status_code=500,  
                 detail=f"Database error: {str(db_error)}"
             )
         
@@ -5754,7 +5935,7 @@ async def save_faucet_metadata(metadata: FaucetMetadata):
         import traceback
         traceback.print_exc()
         raise HTTPException(
-            status_code=500, 
+            status_code=500,  
             detail=f"Failed to save metadata: {str(e)}"
         )
 
@@ -5795,7 +5976,7 @@ async def get_faucet_metadata(faucetAddress: str):
         raise
     except Exception as e:
         print(f"💥 Error getting faucet metadata: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get metadata: {str(e)}")       
+        raise HTTPException(status_code=500, detail=f"Failed to get metadata: {str(e)}")      
 # Scheduled task endpoint (can be called by cron jobs)
 @app.post("/scheduled-usdt-check")
 async def scheduled_usdt_check(
@@ -5925,4 +6106,4 @@ async def debug_usdt_info(chainId: int, usdtContractAddress: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)    
+    uvicorn.run(app, host="0.0.0.0", port=8000)
