@@ -18,7 +18,7 @@ from config import PRIVATE_KEY, get_rpc_url
 from decimal import Decimal
 import logging
 import uuid
-from ethers import ZeroAddress # Placeholder for ethers.ZeroAddress 
+from web3.constants import ADDRESS_ZERO as ZeroAddress
 
 # Add parent directory to sys.path for config import
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -6081,7 +6081,7 @@ async def debug_usdt_info(chainId: int, usdtContractAddress: str):
         w3 = await get_web3_instance(chainId)
         usdt_address = w3.to_checksum_address(usdtContractAddress)
         
-        usdt_info = await get_usdt_contract_info(w3, usdt_address)
+        usdt_info = await get_usdt_contract_info(w3, usdt_address) 
         balance_info = await get_usdt_balance(w3, usdt_address, signer.address)
         
         return {
