@@ -1753,6 +1753,13 @@ signer = Account.from_key(PRIVATE_KEY)
 # Platform owner address
 PLATFORM_OWNER = "0x9fBC2A0de6e5C5Fd96e8D11541608f5F328C0785"
 # --- NEW QUEST PYDANTIC MODELS ---
+class StagePassRequirements(BaseModel):
+    Beginner: int
+    Intermediate: int
+    Advance: int
+    Legend: int
+    Ultimate: int
+    
 class QuestTask(BaseModel):
     id: str
     title: str
@@ -1767,6 +1774,9 @@ class QuestTask(BaseModel):
     targetHandle: Optional[str] = None
     targetContractAddress: Optional[str] = None
     targetChainId: Optional[str] = None
+    stage: str
+    minReferrals: Optional[int] = None
+
 class Quest(BaseModel):
     creatorAddress: str
     title: str
@@ -1775,11 +1785,17 @@ class Quest(BaseModel):
     rewardPool: str
     startDate: str
     endDate: str
-    tasks: List[QuestTask]
-   
+    imageUrl: str # New field
     faucetAddress: str
     rewardTokenType: str
     tokenAddress: str
+    tasks: List[QuestTask]
+    stagePassRequirements: StagePassRequirements # New field
+
+class ImageUploadResponse(BaseModel):
+    success: bool
+    imageUrl: str
+    message: str
 class FinalizeRewardsRequest(BaseModel):
     adminAddress: str
     faucetAddress: str
@@ -4336,25 +4352,62 @@ async def update_x_account(account_id: str, request: dict):
         "success": True,
         "message": "Account status updated"
     }
-# --- QUEST MANAGEMENT ENDPOINTS ---
-@app.post("/api/quests")
+@app.post("/upload-image", response_model=ImageUploadResponse, tags=["Utility"])
+async def upload_faucet_image(file: UploadFile = File(...)):
+    """Upload quest image to Supabase Storage, expects 1024x1024 resolution (validated client-side)."""
+    try:
+        allowed_types = ["image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp"]
+        if file.content_type not in allowed_types:
+            raise HTTPException(status_code=400, detail=f"Invalid file type. Allowed types: {', '.join(allowed_types)}")
+        
+        contents = await file.read()
+        max_size = 5 * 1024 * 1024 # 5MB
+        if len(contents) > max_size:
+            raise HTTPException(status_code=400, detail="File too large. Maximum size is 5MB")
+        
+        file_extension = file.filename.split(".")[-1] if "." in file.filename else "png"
+        unique_filename = f"quest-images/{uuid.uuid4()}.{file_extension}"
+        
+        response = supabase.storage.from_("faucet-assets").upload(
+            path=unique_filename,
+            file=contents,
+            file_options={"content-type": file.content_type, "cache-control": "3600", "upsert": "false"}
+        )
+        
+        public_url = supabase.storage.from_("faucet-assets").get_public_url(unique_filename)
+        
+        print(f"✅ Uploaded quest image: {unique_filename}")
+        
+        return {"success": True, "imageUrl": public_url, "message": "Image uploaded successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"💥 Error uploading image: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}")
+
+# --- QUEST MANAGEMENT ENDPOINTS (UPDATED) ---
+
+@app.post("/api/quests", tags=["Quest Management"])
 async def save_quest(request: Quest):
     """
     Saves the Quest configuration to the database.
-    FIXED: Separates core quest metadata from tasks data, and maps camelCase to snake_case.
+    Handles image_url and stage_pass_requirements fields using Supabase.
     """
     try:
         if not Web3.is_address(request.creatorAddress) or not Web3.is_address(request.faucetAddress):
             raise HTTPException(status_code=400, detail="Invalid address format for creator or faucet.")
-       
+        
         faucet_address_cs = Web3.to_checksum_address(request.faucetAddress)
-       
-        # 1. Convert Pydantic model to dict
+        
         quest_data = request.dict()
-        # 2. FIX: SEPARATE TASKS. Extract tasks array which belongs in 'faucet_tasks' table
+        
+        # 1. Extract and separate complex fields
         tasks_to_store = quest_data.pop("tasks")
-       
-        # 3. SCHEMA FIX: Manually rename remaining keys for 'quests' table
+        stage_reqs_to_store = quest_data.pop("stagePassRequirements")
+
+        # 2. Map remaining fields to snake_case column names for the 'quests' table
         quest_data_db = {
             "faucet_address": faucet_address_cs,
             "creator_address": quest_data.pop("creatorAddress"),
@@ -4366,23 +4419,28 @@ async def save_quest(request: Quest):
             "end_date": quest_data.pop("endDate"),
             "reward_token_type": quest_data.pop("rewardTokenType"),
             "token_address": quest_data.pop("tokenAddress"),
-           
+            
+            # New/Updated fields:
+            "image_url": quest_data.pop("imageUrl"), 
+            "stage_pass_requirements": stage_reqs_to_store, # Stored as JSON/Dict
+            
             "created_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat()
         }
-        # 4. Store main quest data in the 'quests' table
+
+        # 3. Store main quest data in the 'quests' table
         response = supabase.table("quests").upsert(
             quest_data_db,
             on_conflict="faucet_address"
         ).execute()
         if not response.data:
-            raise HTTPException(status_code=500, detail="Failed to save core quest metadata.")
-       
-        # 5. Store tasks data in the 'faucet_tasks' table
+            raise HTTPException(status_code=500, detail="Failed to save core quest metadata to Supabase.")
+        
+        # 4. Store tasks data in the 'faucet_tasks' table
         await store_faucet_tasks(faucet_address_cs, tasks_to_store, quest_data_db["creator_address"])
-       
+        
         print(f"✅ Saved Quest: '{request.title}'. Faucet: {faucet_address_cs}")
-       
+        
         return {
             "success": True,
             "message": "Quest and Faucet metadata saved successfully.",
@@ -4394,38 +4452,34 @@ async def save_quest(request: Quest):
         print(f"💥 Error saving quest: {str(e)}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to save quest: {str(e)}")
-# --- FIXED ENDPOINT IMPLEMENTATION ---
 
-@app.get("/api/quests/{faucetAddress}")
+# --- GET QUEST BY ADDRESS (Updated to fetch new fields) ---
+
+@app.get("/api/quests/{faucetAddress}", tags=["Quest Management"])
 async def get_quest_by_address(faucetAddress: str):
     """
-    Fetch a single quest by faucet address with full details including tasks.
-    Returns data in camelCase format for frontend compatibility.
+    Fetch a single quest by faucet address with full details including tasks, image, and stage requirements.
     """
     try:
         print(f"🔍 Fetching quest details for faucet: {faucetAddress}")
         
-        # Validate address
         if not Web3.is_address(faucetAddress):
             raise HTTPException(status_code=400, detail="Invalid faucet address format")
         
         faucet_address = Web3.to_checksum_address(faucetAddress)
         
-        # Fetch quest from database
+        # 1. Fetch quest from database
         response = supabase.table("quests").select("*").eq(
             "faucet_address", faucet_address
         ).execute()
         
         if not response.data or len(response.data) == 0:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Quest not found for faucet address: {faucet_address}"
-            )
+            raise HTTPException(status_code=404, detail=f"Quest not found for faucet address: {faucet_address}")
         
         quest_row = response.data[0]
         
-        # Fetch tasks for this quest
-        tasks_response = supabase.table("faucet_tasks").select("*").eq(
+        # 2. Fetch tasks
+        tasks_response = supabase.table("faucet_tasks").select("tasks").eq(
             "faucet_address", faucet_address
         ).execute()
         
@@ -4433,32 +4487,29 @@ async def get_quest_by_address(faucetAddress: str):
         if tasks_response.data and len(tasks_response.data) > 0:
             tasks = tasks_response.data[0].get("tasks", [])
         
-        # Fetch participants count
+        # 3. Fetch participants count
         try:
             participants_response = supabase.table("quest_submissions").select(
                 "user_address", count="exact"
             ).eq("faucet_address", faucet_address).execute()
             
             participants_count = participants_response.count if hasattr(participants_response, 'count') else 0
-        except Exception as e:
-            print(f"⚠️ Could not fetch participants: {str(e)}")
+        except Exception:
             participants_count = 0
         
-        # Parse dates
-        start_date = quest_row.get("start_date")
-        end_date = quest_row.get("end_date")
+        # 4. Parse dates
+        start_date = datetime.fromisoformat(quest_row.get("start_date").replace('Z', '+00:00')).strftime('%Y-%m-%d')
+        end_date = datetime.fromisoformat(quest_row.get("end_date").replace('Z', '+00:00')).strftime('%Y-%m-%d')
         
-        if isinstance(start_date, str):
-            start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00')).strftime('%Y-%m-%d')
-        elif hasattr(start_date, 'isoformat'):
-            start_date = start_date.isoformat()
-            
-        if isinstance(end_date, str):
-            end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00')).strftime('%Y-%m-%d')
-        elif hasattr(end_date, 'isoformat'):
-            end_date = end_date.isoformat()
+        # 5. Handle stage_pass_requirements (ensure it's parsed if stored as string JSON)
+        stage_pass_requirements = quest_row.get("stage_pass_requirements")
+        if isinstance(stage_pass_requirements, str):
+            try:
+                stage_pass_requirements = json.loads(stage_pass_requirements)
+            except:
+                stage_pass_requirements = {}
         
-        # Build full quest data in camelCase
+        # 6. Build full quest data in camelCase
         quest_data = {
             "faucetAddress": faucet_address,
             "title": quest_row.get("title"),
@@ -4470,6 +4521,8 @@ async def get_quest_by_address(faucetAddress: str):
             "endDate": end_date,
             "rewardTokenType": quest_row.get("reward_token_type"),
             "tokenAddress": quest_row.get("token_address"),
+            "imageUrl": quest_row.get("image_url"), 
+            "stagePassRequirements": stage_pass_requirements,
             "tasks": tasks,
             "tasksCount": len(tasks),
             "participantsCount": participants_count,
@@ -4479,26 +4532,22 @@ async def get_quest_by_address(faucetAddress: str):
         
         print(f"✅ Successfully fetched quest details for {faucet_address}")
         
-        return {
-            "success": True,
-            "quest": quest_data
-        }
+        return {"success": True, "quest": quest_data}
         
     except HTTPException:
         raise
     except Exception as e:
         print(f"❌ Error fetching quest: {str(e)}")
         traceback.print_exc()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch quest: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to fetch quest: {str(e)}")
+        
+# --- GET ALL QUESTS (Updated to fetch new fields) ---
 
-@app.get("/api/quests")
+@app.get("/api/quests", tags=["Quest Management"])
 async def get_all_quests():
     """
     Fetch all quests from Supabase with computed fields for tasks and participants.
-    Returns data in camelCase format for frontend compatibility.
+    UPDATED: Includes image_url and stage_pass_requirements in the data where possible.
     """
     try:
         print("🔍 Fetching all quests from Supabase...")
@@ -4508,11 +4557,7 @@ async def get_all_quests():
         
         if not response.data:
             print("📭 No quests found in database")
-            return {
-                "success": True,
-                "quests": [],
-                "message": "No quests found"
-            }
+            return {"success": True, "quests": [], "message": "No quests found"}
         
         quests_list = []
         
@@ -4520,41 +4565,29 @@ async def get_all_quests():
             try:
                 faucet_address = quest_row.get("faucet_address")
                 
-                # Fetch tasks count for this quest
+                # Fetch tasks count 
                 tasks_response = supabase.table("faucet_tasks").select("tasks", count="exact").eq(
                     "faucet_address", faucet_address
                 ).execute()
                 
                 tasks_count = 0
                 if tasks_response.data and len(tasks_response.data) > 0:
-                    # Count the number of tasks in the tasks array
                     tasks_array = tasks_response.data[0].get("tasks", [])
                     tasks_count = len(tasks_array) if tasks_array else 0
-                
-                # Fetch participants count (unique users who submitted for this quest)
+                    
+                # Fetch participants count
                 try:
                     participants_response = supabase.table("quest_submissions").select(
                         "user_address", count="exact"
                     ).eq("faucet_address", faucet_address).execute()
                     
                     participants_count = participants_response.count if hasattr(participants_response, 'count') else 0
-                except Exception as e:
-                    print(f"⚠️ Could not fetch participants for {faucet_address}: {str(e)}")
+                except Exception:
                     participants_count = 0
-                
-                # Parse dates if they're strings
-                start_date = quest_row.get("start_date")
-                end_date = quest_row.get("end_date")
-                
-                if isinstance(start_date, str):
-                    start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00')).strftime('%Y-%m-%d')
-                elif hasattr(start_date, 'isoformat'):
-                    start_date = start_date.isoformat()
                     
-                if isinstance(end_date, str):
-                    end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00')).strftime('%Y-%m-%d')
-                elif hasattr(end_date, 'isoformat'):
-                    end_date = end_date.isoformat()
+                # Parse dates
+                start_date = datetime.fromisoformat(quest_row.get("start_date").replace('Z', '+00:00')).strftime('%Y-%m-%d')
+                end_date = datetime.fromisoformat(quest_row.get("end_date").replace('Z', '+00:00')).strftime('%Y-%m-%d')
                 
                 # Build quest overview in camelCase for frontend
                 quest_data = {
@@ -4568,6 +4601,7 @@ async def get_all_quests():
                     "endDate": end_date,
                     "tasksCount": tasks_count,
                     "participantsCount": participants_count,
+                    "imageUrl": quest_row.get("image_url"), # Include image URL for listing
                 }
                 
                 quests_list.append(quest_data)
@@ -4579,20 +4613,12 @@ async def get_all_quests():
         
         print(f"✅ Successfully fetched {len(quests_list)} quests from database")
         
-        return {
-            "success": True,
-            "quests": quests_list,
-            "count": len(quests_list)
-        }
+        return {"success": True, "quests": quests_list, "count": len(quests_list)}
         
     except Exception as e:
         print(f"❌ Error fetching quests: {str(e)}")
         traceback.print_exc()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch quests: {str(e)}"
-        )
-@app.post("/admin/finalize-rewards")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch quests: {str(e)}")@app.post("/admin/finalize-rewards")
 async def finalize_rewards(request: FinalizeRewardsRequest):
     # Mocking success for demo, actual implementation requires Web3 interaction
     if len(request.winners) != len(request.amounts):
