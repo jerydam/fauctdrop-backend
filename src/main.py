@@ -1759,7 +1759,12 @@ class StagePassRequirements(BaseModel):
     Advance: int
     Legend: int
     Ultimate: int
-    
+
+class DeleteFaucetRequest(BaseModel):
+    faucetAddress: str
+    userAddress: str # The initiator of the deletion
+    chainId: int
+
 class QuestTask(BaseModel):
     id: str
     title: str
@@ -2715,6 +2720,33 @@ async def upload_faucet_image(file: UploadFile = File(...)):
     except Exception as e:
         print(f"💥 Error uploading image: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}")
+    
+@app.get("/deleted-faucets", tags=["Utility"])
+async def get_deleted_faucets_endpoint():
+    """
+    Returns a list of all faucet addresses marked as permanently deleted in the database.
+    (This is typically used for auditing or filtering on the frontend.)
+    """
+    try:
+        # NOTE: Implement proper authentication/authorization here if this endpoint should be restricted
+        # For security, you should check if the requester is an admin or platform owner.
+        
+        deleted_faucets = await get_all_deleted_faucets()
+        
+        # Extract just the addresses for simplicity in this endpoint
+        deleted_addresses = [record['faucet_address'] for record in deleted_faucets]
+        
+        return {
+            "success": True,
+            "count": len(deleted_addresses),
+            "deletedAddresses": deleted_addresses,
+            "message": "Successfully retrieved list of deleted faucet addresses."
+        }
+        
+    except Exception as e:
+        print(f"💥 Error in get_deleted_faucets_endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve deleted faucet list: {str(e)}")
+        
 # Optional: Endpoint to delete an image
 @app.delete("/delete-image")
 async def delete_faucet_image(image_url: str):
@@ -3260,6 +3292,83 @@ async def get_all_secret_codes() -> list:
     except Exception as e:
         print(f"Database error in get_all_secret_codes: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+# Add these utility functions to a logical place in backend-service.py (e.g., near other database functions)
+
+async def get_all_deleted_faucets() -> List[Dict]:
+    """
+    Retrieves all deleted faucet records from the 'deleted_faucets' table.
+    """
+    try:
+        print("🔍 Retrieving all deleted faucet addresses from Supabase...")
+        
+        # Select all columns, ordered by most recently deleted
+        response = supabase.table("deleted_faucets").select("*").order("deleted_at", desc=True).execute()
+        
+        deleted_records = response.data or []
+        
+        print(f"✅ Found {len(deleted_records)} deleted faucet records.")
+        return deleted_records
+        
+    except Exception as e:
+        print(f"💥 Database error in get_all_deleted_faucets: {str(e)}")
+        # Log the error and return an empty list gracefully
+        return []
+    
+   
+
+async def record_deleted_faucet(faucet_address: str, deleted_by: str, chain_id: int):
+    """
+    Records a faucet address in the 'deleted_faucets' table in Supabase.
+    """
+    try:
+        if not Web3.is_address(faucet_address) or not Web3.is_address(deleted_by):
+            raise ValueError("Invalid address format for faucet or deleter.")
+        
+        checksum_faucet_address = Web3.to_checksum_address(faucet_address)
+        checksum_deleted_by = Web3.to_checksum_address(deleted_by)
+        
+        data = {
+            "faucet_address": checksum_faucet_address,
+            "deleted_by": checksum_deleted_by,
+            "chain_id": chain_id,
+            "deleted_at": datetime.now().isoformat()
+        }
+        
+        # Insert the record. We don't use upsert here as we expect only one deletion record.
+        response = supabase.table("deleted_faucets").insert(data).execute()
+        
+        if not response.data:
+            raise Exception("Failed to record deleted faucet in Supabase.")
+        
+        print(f"✅ Recorded deleted faucet {checksum_faucet_address} by {checksum_deleted_by}")
+        return response.data[0]
+        
+    except Exception as e:
+        print(f"💥 Database error in record_deleted_faucet: {str(e)}")
+        # Log the error but don't halt the flow for the user if the transaction succeeded
+        return None
+
+async def is_faucet_permanently_deleted(faucet_address: str) -> bool:
+    """
+    Checks if a faucet is marked as permanently deleted in the Supabase table.
+    """
+    try:
+        if not Web3.is_address(faucet_address):
+            return False
+            
+        checksum_faucet_address = Web3.to_checksum_address(faucet_address)
+        
+        response = supabase.table("deleted_faucets").select("faucet_address").eq(
+            "faucet_address", checksum_faucet_address
+        ).execute()
+        
+        return len(response.data) > 0
+        
+    except Exception as e:
+        print(f"⚠️ Error checking deletion status in DB: {str(e)}")
+        return False    
+
 async def check_secret_code_status(faucet_address: str, secret_code: str) -> Dict[str, Any]:
     """
     Check if a provided secret code matches and is valid for a faucet.
