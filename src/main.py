@@ -3293,7 +3293,7 @@ async def get_all_secret_codes() -> list:
         print(f"Database error in get_all_secret_codes: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-# Add these utility functions to a logical place in backend-service.py (e.g., near other database functions)
+# --- NEW FAUCET DELETION UTILITIES ---
 
 async def get_all_deleted_faucets() -> List[Dict]:
     """
@@ -3315,11 +3315,10 @@ async def get_all_deleted_faucets() -> List[Dict]:
         # Log the error and return an empty list gracefully
         return []
     
-   
-
 async def record_deleted_faucet(faucet_address: str, deleted_by: str, chain_id: int):
     """
-    Records a faucet address in the 'deleted_faucets' table in Supabase.
+    Records a faucet address in the 'deleted_faucets' table in Supabase 
+    AFTER the on-chain transaction succeeded.
     """
     try:
         if not Web3.is_address(faucet_address) or not Web3.is_address(deleted_by):
@@ -3335,8 +3334,8 @@ async def record_deleted_faucet(faucet_address: str, deleted_by: str, chain_id: 
             "deleted_at": datetime.now().isoformat()
         }
         
-        # Insert the record. We don't use upsert here as we expect only one deletion record.
-        response = supabase.table("deleted_faucets").insert(data).execute()
+        # Insert the record. Assumes the "deleted_faucets" table has been created in Supabase.
+        response = supabase.table("deleted_faucets").upsert(data, on_conflict="faucet_address").execute()
         
         if not response.data:
             raise Exception("Failed to record deleted faucet in Supabase.")
@@ -3346,8 +3345,9 @@ async def record_deleted_faucet(faucet_address: str, deleted_by: str, chain_id: 
         
     except Exception as e:
         print(f"💥 Database error in record_deleted_faucet: {str(e)}")
-        # Log the error but don't halt the flow for the user if the transaction succeeded
-        return None
+        raise
+
+
 
 async def is_faucet_permanently_deleted(faucet_address: str) -> bool:
     """
@@ -3996,6 +3996,51 @@ async def save_faucet_x_template(request: CustomXPostTemplate):
     except Exception as e:
         print(f"💥 Error saving X post template: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to save template: {str(e)}")
+
+# --- NEW API ENDPOINT: DELETE FAUCET METADATA ---
+
+@app.post("/delete-faucet-metadata") 
+async def delete_faucet_metadata_endpoint(request: DeleteFaucetRequest):
+    """
+    [CRITICAL] Records the faucet address in the 'deleted_faucets' table and cleans up metadata.
+    This should be called AFTER the on-chain delete transaction succeeds.
+    """
+    try:
+        faucet_address = Web3.to_checksum_address(request.faucetAddress)
+        user_address = Web3.to_checksum_address(request.userAddress)
+        
+        # 1. Authorize the user (Crucial security step)
+        w3 = await get_web3_instance(request.chainId)
+        is_authorized = await check_user_is_authorized_for_faucet(w3, faucet_address, user_address)
+        if not is_authorized:
+            raise HTTPException(
+                status_code=403, 
+                detail="Access denied. Only the faucet owner/admin can finalize deletion metadata."
+            )
+        
+        # 2. Record the deletion in the new table
+        await record_deleted_faucet(faucet_address, user_address, request.chainId)
+
+        # 3. Clean up other metadata (good practice)
+        supabase.table("faucet_metadata").delete().eq("faucet_address", faucet_address).execute()
+        supabase.table("faucet_tasks").delete().eq("faucet_address", faucet_address).execute()
+        supabase.table("faucet_x_templates").delete().eq("faucet_address", faucet_address).execute()
+        
+        print(f"✅ Metadata cleaned up for deleted faucet: {faucet_address}")
+
+        return {
+            "success": True,
+            "faucetAddress": faucet_address,
+            "message": "Faucet marked as deleted and metadata cleaned up."
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"💥 Error processing faucet metadata deletion: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete metadata: {str(e)}")
+
+
 @app.get("/faucet-x-template/{faucetAddress}")
 async def get_faucet_x_template(faucetAddress: str):
     """Get custom X post template for a faucet"""
