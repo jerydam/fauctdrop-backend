@@ -1796,6 +1796,13 @@ class Quest(BaseModel):
     tokenAddress: str
     tasks: List[QuestTask]
     stagePassRequirements: StagePassRequirements # New field
+# --- Pydantic Model (No changes needed here) ---
+class RegisterFaucetRequest(BaseModel):
+    faucetAddress: str
+    ownerAddress: str
+    chainId: int
+    faucetType: str
+    name: str
 
 class ImageUploadResponse(BaseModel):
     success: bool
@@ -4239,7 +4246,7 @@ async def save_droplist_config(request: DroplistConfigRequest):
             )
        
         # Store configuration
-        result = await store_droplist_config(request.config, request.tasks, user_address)
+        result = await store_droplist_config(request.config, request. s, user_address)
        
         return {
             "success": True,
@@ -6182,6 +6189,97 @@ async def save_faucet_metadata(metadata: FaucetMetadata):
             status_code=500,
             detail=f"Failed to save metadata: {str(e)}"
         )
+
+
+# --- API Endpoints ---
+
+@app.post("/register-faucet")
+async def register_faucet_endpoint(request: RegisterFaucetRequest):
+    """
+    Registers a new faucet in the 'userfaucets' table.
+    """
+    try:
+        print(f"📝 Registering new faucet: {request.name} ({request.faucetAddress})")
+
+        if not Web3.is_address(request.faucetAddress) or not Web3.is_address(request.ownerAddress):
+            raise HTTPException(status_code=400, detail="Invalid address format")
+
+        faucet_address_cs = Web3.to_checksum_address(request.faucetAddress)
+        owner_address_cs = Web3.to_checksum_address(request.ownerAddress)
+
+        data = {
+            "faucet_address": faucet_address_cs,
+            "owner_address": owner_address_cs,
+            "chain_id": request.chainId,
+            "faucet_type": request.faucetType,
+            "name": request.name,
+            "created_at": datetime.now().isoformat()
+        }
+
+        # UPDATED: Table name is now 'userfaucets'
+        response = supabase.table("userfaucets").upsert(
+            data, 
+            on_conflict="faucet_address"
+        ).execute()
+
+        if not response.data:
+            raise HTTPException(status_code=500, detail="Failed to register faucet in database")
+
+        print(f"✅ Faucet registered in userfaucets: {faucet_address_cs}")
+        
+        return {
+            "success": True,
+            "message": "Faucet registered successfully",
+            "data": response.data[0]
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"💥 Error registering faucet: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@app.get("/user-faucets/{user_address}")
+async def get_user_faucets_endpoint(user_address: str):
+    """
+    Fetches all faucets from 'userfaucets' for a specific user.
+    """
+    try:
+        if not Web3.is_address(user_address):
+            raise HTTPException(status_code=400, detail="Invalid user address")
+
+        # FIX: Convert to lowercase to match the data stored by the sync script
+        owner_address_lower = user_address.lower()
+
+        # Query Supabase using the lowercase address
+        response = supabase.table("userfaucets").select("*").eq(
+            "owner_address", owner_address_lower
+        ).order("created_at", desc=True).execute()
+
+        faucets = response.data or []
+
+        formatted_faucets = []
+        for f in faucets:
+            formatted_faucets.append({
+                # Return checksummed addresses to the frontend for display consistency
+                "faucetAddress": Web3.to_checksum_address(f.get("faucet_address")),
+                "ownerAddress": Web3.to_checksum_address(f.get("owner_address")),
+                "chainId": f.get("chain_id"),
+                "faucetType": f.get("faucet_type"),
+                "name": f.get("name"),
+                "createdAt": f.get("created_at")
+            })
+
+        return {
+            "success": True,
+            "faucets": formatted_faucets,
+            "count": len(formatted_faucets)
+        }
+
+    except Exception as e:
+        print(f"💥 Error fetching user faucets: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch faucets: {str(e)}")
 @app.get("/faucet-metadata/{faucetAddress}")
 async def get_faucet_metadata(faucetAddress: str):
     """Get faucet description and image"""
