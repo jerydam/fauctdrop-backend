@@ -4795,24 +4795,76 @@ async def finalize_rewards(request: FinalizeRewardsRequest):
     }
 @app.post("/add-faucet-tasks")
 async def add_faucet_tasks_endpoint(request: AddTasksRequest):
+    """Add tasks to a faucet (Appending to existing tasks)."""
     try:
+        print(f"📝 Adding {len(request.tasks)} tasks to faucet: {request.faucetAddress}")
+        
+        # 1. Validate Addresses
+        if not Web3.is_address(request.faucetAddress) or not Web3.is_address(request.userAddress):
+            raise HTTPException(status_code=400, detail="Invalid address format")
+        
+        # Validate chain ID
+        if request.chainId not in VALID_CHAIN_IDS:
+            raise HTTPException(status_code=400, detail=f"Invalid chainId: {request.chainId}")
+        
         faucet_address = Web3.to_checksum_address(request.faucetAddress)
         user_address = Web3.to_checksum_address(request.userAddress)
-       
-        tasks_dict = [task for task in request.tasks]
-       
+        
+        # 2. Get Web3 instance and Authorize User
+        w3 = await get_web3_instance(request.chainId)
+        
+        is_authorized = await check_user_is_authorized_for_faucet(w3, faucet_address, user_address)
+        if not is_authorized:
+            raise HTTPException(
+                status_code=403, 
+                detail="Access denied. User must be owner, admin, or backend address."
+            )
+
+        # 3. Fetch Existing Tasks
+        existing_tasks = []
+        try:
+            # We reuse your existing helper function
+            existing_data = await get_faucet_tasks(faucet_address)
+            if existing_data and "tasks" in existing_data:
+                existing_tasks = existing_data["tasks"]
+                print(f"found {len(existing_tasks)} existing tasks.")
+        except Exception as e:
+            print(f"No existing tasks found or DB error (continuing with empty list): {e}")
+            existing_tasks = []
+
+        # 4. Convert new tasks to dictionary format
+        new_tasks_dict = [task.dict() for task in request.tasks]
+
+        # 5. Append Logic (Merge lists)
+        # Note: You might want to filter duplicates here based on URL if necessary.
+        # For now, this simply adds the new ones to the end.
+        combined_tasks = existing_tasks + new_tasks_dict
+
+        # 6. Store the Combined List
+        result = await store_faucet_tasks(faucet_address, combined_tasks, user_address)
+        
+        print(f"✅ Successfully stored {len(combined_tasks)} total tasks for faucet {faucet_address}")
+        
         return {
             "success": True,
             "faucetAddress": faucet_address,
-            "tasksAdded": len(tasks_dict),
+            "tasksAdded": len(new_tasks_dict),
+            "totalTasks": len(combined_tasks),
             "userAddress": user_address,
             "chainId": request.chainId,
-            "data": {"mock": "data"},
-            "message": f"Successfully added {len(tasks_dict)} tasks (MOCK DB)"
+            "data": result,
+            "message": f"Successfully added tasks. Total tasks: {len(combined_tasks)}"
         }
+        
+    except HTTPException as e:
+        raise e
     except Exception as e:
+        print(f"💥 Error in add_faucet_tasks: {str(e)}")
+        # Log stack trace for easier debugging
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to add tasks: {str(e)}")
-   
+    
 # API Endpoints for Claims and Tasks
 @app.post("/admin-popup-preference")
 async def save_admin_popup_preference_endpoint(request: AdminPopupPreferenceRequest):
