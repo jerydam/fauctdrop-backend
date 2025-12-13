@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, distinct, text # Needed for DB interaction
 from sqlalchemy import Column, TEXT, BOOLEAN, DATE, TIMESTAMP, text # Import required DB elements
 from sqlalchemy.ext.declarative import declarative_base # Import the base for ORM models
+from eth_account.messages import encode_defunct
 # ... other imports ...
 import traceback # Added for better error logging
 import logging
@@ -1849,6 +1850,27 @@ class DroplistTask(BaseModel):
     action: Optional[str] = "follow"
     points: int = 100
     category: str = "social"
+
+class UserProfileUpdate(BaseModel):
+    wallet_address: str
+    username: str
+    email: Optional[str] = None
+    bio: Optional[str] = None
+    twitter_handle: Optional[str] = None
+    discord_handle: Optional[str] = None
+    telegram_handle: Optional[str] = None  # NEW
+    farcaster_handle: Optional[str] = None # NEW
+    avatar_url: Optional[str] = None
+    # Security fields
+    signature: str 
+    message: str 
+    nonce: str
+class LinkedWalletRequest(BaseModel):
+    main_wallet: str
+    secondary_wallet: str
+    signature: str # Signed by the secondary wallet
+    message: str
+
 class DroplistConfig(BaseModel):
     isActive: bool
     title: str
@@ -2039,6 +2061,7 @@ class AnalyticsDataManager:
             print(f"❌ Error storing analytics data for {key}: {str(e)}")
             return False
    
+   
     async def get_analytics_data(self, key: str) -> Optional[Any]:
         """Get analytics data from Supabase"""
         try:
@@ -2218,6 +2241,7 @@ class AnalyticsDataManager:
         except Exception as e:
             print(f"❌ Error fetching transactions from {network['name']}: {str(e)}")
             return []
+        
     def process_faucets_for_chart(self, faucets_data: List[Dict]) -> List[Dict]:
         """Process faucets data for chart display"""
         try:
@@ -2672,6 +2696,19 @@ class AnalyticsDataManager:
            
         finally:
             self.is_updating = False
+
+def verify_signature(address: str, message: str, signature: str) -> bool:
+    """Recover the signer address from the signature to verify authenticity."""
+    try:
+        # Create the precise message structure expected by EIP-191
+        encoded_message = encode_defunct(text=message)
+        recovered_address = Account.recover_message(encoded_message, signature=signature)
+        
+        return recovered_address.lower() == address.lower()
+    except Exception as e:
+        print(f"Signature verification failed: {e}")
+        return False
+
 # Image upload endpoint using Supabase Storage
 @app.post("/upload-image", response_model=ImageUploadResponse)
 async def upload_faucet_image(file: UploadFile = File(...)):
@@ -4864,7 +4901,66 @@ async def add_faucet_tasks_endpoint(request: AddTasksRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to add tasks: {str(e)}")
-    
+
+# --- USER PROFILE ENDPOINTS ---
+
+@app.get("/api/profile/{wallet_address}")
+async def get_user_profile_data(wallet_address: str):
+    """Fetch user profile details."""
+    try:
+        if not Web3.is_address(wallet_address):
+            raise HTTPException(status_code=400, detail="Invalid address")
+            
+        checksum_address = Web3.to_checksum_address(wallet_address)
+        
+        response = supabase.table("user_profiles").select("*").eq("wallet_address", checksum_address).execute()
+        
+        if response.data:
+            return {"success": True, "profile": response.data[0]}
+        else:
+            return {"success": True, "profile": None, "message": "Profile not found"}
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/profile/update")
+async def update_user_profile(request: UserProfileUpdate):
+    """Update user details with signature verification."""
+    try:
+        address = Web3.to_checksum_address(request.wallet_address)
+        
+        # 1. Verify Signature
+        if not verify_signature(address, request.message, request.signature):
+            raise HTTPException(status_code=401, detail="Invalid signature. You are not the owner of this wallet.")
+
+        # 2. Prepare Data (Include new fields)
+        data = {
+            "wallet_address": address,
+            "username": request.username,
+            "email": request.email,
+            "bio": request.bio,
+            "twitter_handle": request.twitter_handle,
+            "discord_handle": request.discord_handle,
+            "telegram_handle": request.telegram_handle,   # NEW
+            "farcaster_handle": request.farcaster_handle, # NEW
+            "avatar_url": request.avatar_url,
+            "updated_at": datetime.now().isoformat()
+        }
+
+        # 3. Upsert to Supabase
+        response = supabase.table("user_profiles").upsert(data).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=500, detail="Failed to save profile")
+            
+        return {"success": True, "message": "Profile updated successfully", "data": response.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Profile update error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+      
 # API Endpoints for Claims and Tasks
 @app.post("/admin-popup-preference")
 async def save_admin_popup_preference_endpoint(request: AdminPopupPreferenceRequest):
