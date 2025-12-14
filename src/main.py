@@ -1761,6 +1761,12 @@ class StagePassRequirements(BaseModel):
     Legend: int
     Ultimate: int
 
+# Request model for availability check
+class AvailabilityCheckRequest(BaseModel):
+    field: str  # e.g., "username", "email", "twitter_handle"
+    value: str
+    current_wallet: str
+
 class DeleteFaucetRequest(BaseModel):
     faucetAddress: str
     userAddress: str # The initiator of the deletion
@@ -4265,6 +4271,58 @@ async def debug_drop_code_status(faucetAddress: str):
             "error": str(e),
             "faucetAddress": faucetAddress
         }
+
+@app.post("/api/profile/check-availability")
+async def check_availability(request: AvailabilityCheckRequest):
+    """
+    Checks if a profile field value is already taken by ANOTHER user.
+    Uses 'ilike' for case-insensitive comparison.
+    """
+    try:
+        if not request.value:
+            return {"available": True}
+
+        # Map frontend field names to database column names
+        column_map = {
+            "username": "username",
+            "email": "email",
+            "twitter_handle": "twitter_handle",
+            "discord_handle": "discord_handle",
+            "telegram_handle": "telegram_handle",
+            "farcaster_handle": "farcaster_handle"
+        }
+
+        if request.field not in column_map:
+            raise HTTPException(status_code=400, detail="Invalid field for uniqueness check")
+
+        column = column_map[request.field]
+        
+        # Ensure address is checksummed
+        try:
+            current_wallet_cs = Web3.to_checksum_address(request.current_wallet)
+        except:
+            raise HTTPException(status_code=400, detail="Invalid wallet address format")
+
+        # UPDATED QUERY: Use .ilike() instead of .eq()
+        # This checks if 'Value', 'value', or 'VALUE' exists, excluding the current user
+        response = supabase.table("user_profiles")\
+            .select("wallet_address")\
+            .ilike(column, request.value)\
+            .neq("wallet_address", current_wallet_cs)\
+            .execute()
+
+        if response.data and len(response.data) > 0:
+            return {
+                "available": False, 
+                "message": f"This {request.field.replace('_', ' ')} is already in use."
+            }
+
+        return {"available": True, "message": "Available"}
+
+    except Exception as e:
+        print(f"Availability check error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
 # API Endpoints
 @app.post("/api/droplist/config")
 async def save_droplist_config(request: DroplistConfigRequest):
