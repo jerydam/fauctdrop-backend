@@ -6410,12 +6410,13 @@ async def register_faucet_endpoint(request: RegisterFaucetRequest):
         if not Web3.is_address(request.faucetAddress) or not Web3.is_address(request.ownerAddress):
             raise HTTPException(status_code=400, detail="Invalid address format")
 
-        faucet_address_cs = Web3.to_checksum_address(request.faucetAddress)
-        owner_address_cs = Web3.to_checksum_address(request.ownerAddress)
+        # --- FIX: CONVERT TO LOWERCASE FOR DB STORAGE ---
+        faucet_address_lower = request.faucetAddress.lower()
+        owner_address_lower = request.ownerAddress.lower()
 
         data = {
-            "faucet_address": faucet_address_cs,
-            "owner_address": owner_address_cs,
+            "faucet_address": faucet_address_lower, # Stored as lowercase
+            "owner_address": owner_address_lower,   # Stored as lowercase
             "chain_id": request.chainId,
             "faucet_type": request.faucetType,
             "name": request.name,
@@ -6431,7 +6432,8 @@ async def register_faucet_endpoint(request: RegisterFaucetRequest):
         if not response.data:
             raise HTTPException(status_code=500, detail="Failed to register faucet in database")
 
-        print(f"✅ Faucet registered in userfaucets: {faucet_address_cs}")
+        # For logging, we can still use checksum if desired, but DB has lowercase
+        print(f"✅ Faucet registered in userfaucets: {faucet_address_lower}")
         
         return {
             "success": True,
@@ -6444,8 +6446,6 @@ async def register_faucet_endpoint(request: RegisterFaucetRequest):
     except Exception as e:
         print(f"💥 Error registering faucet: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-
-
 @app.get("/user-faucets/{user_address}")
 async def get_user_faucets_endpoint(user_address: str):
     """
@@ -6486,6 +6486,7 @@ async def get_user_faucets_endpoint(user_address: str):
     except Exception as e:
         print(f"💥 Error fetching user faucets: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch faucets: {str(e)}")
+
 @app.get("/faucet-metadata/{faucetAddress}")
 async def get_faucet_metadata(faucetAddress: str):
     """Get faucet description and image"""
@@ -6515,7 +6516,7 @@ async def get_faucet_metadata(faucetAddress: str):
             "success": True,
             "faucetAddress": faucet_address,
             "description": None,
-            "imageUrl": None,
+            "imageUrl": None,                                                                                                                                                               
             "message": "No metadata found for this faucet"
         }
        
