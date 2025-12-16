@@ -4049,49 +4049,50 @@ async def save_faucet_x_template(request: CustomXPostTemplate):
 
 # --- NEW API ENDPOINT: DELETE FAUCET METADATA ---
 
+# In main.py
+
 @app.post("/delete-faucet-metadata") 
 async def delete_faucet_metadata_endpoint(request: DeleteFaucetRequest):
-    """
-    [CRITICAL] Records the faucet address in the 'deleted_faucets' table and cleans up metadata.
-    This should be called AFTER the on-chain delete transaction succeeds.
-    """
     try:
-        faucet_address = Web3.to_checksum_address(request.faucetAddress)
-        user_address = Web3.to_checksum_address(request.userAddress)
+        # 1. Use Checksum for Web3 verification (Security)
+        faucet_address_checksum = Web3.to_checksum_address(request.faucetAddress)
+        user_address_checksum = Web3.to_checksum_address(request.userAddress)
         
-        # 1. Authorize the user
+        # 2. Verify authorization using the checksummed address
         w3 = await get_web3_instance(request.chainId)
-        is_authorized = await check_user_is_authorized_for_faucet(w3, faucet_address, user_address)
+        is_authorized = await check_user_is_authorized_for_faucet(w3, faucet_address_checksum, user_address_checksum)
+        
         if not is_authorized:
             raise HTTPException(status_code=403, detail="Access denied.")
         
-        # 2. Record the deletion
-        await record_deleted_faucet(faucet_address, user_address, request.chainId)
+        # 3. CONVERT TO LOWERCASE FOR DATABASE OPERATIONS
+        # This ensures we match the format stored in 'userfaucets'
+        faucet_address_lower = request.faucetAddress.lower()
 
-        # 3. Clean up other metadata
-        supabase.table("faucet_metadata").delete().eq("faucet_address", faucet_address).execute()
-        supabase.table("faucet_tasks").delete().eq("faucet_address", faucet_address).execute()
-        supabase.table("faucet_x_templates").delete().eq("faucet_address", faucet_address).execute()
+        # 4. Perform the Deletions using LOWERCASE address
+        # Delete from userfaucets (The one showing in dashboard)
+        supabase.table("userfaucets").delete().eq("faucet_address", faucet_address_lower).execute()
         
-        # --- ADD THIS LINE HERE ---
-        # 4. Remove from the user's dashboard list
-        supabase.table("userfaucets").delete().eq("faucet_address", faucet_address).execute()
-        # --------------------------
-        
-        print(f"✅ Metadata and registry cleaned up for deleted faucet: {faucet_address}")
+        # Clean up other metadata
+        supabase.table("faucet_metadata").delete().eq("faucet_address", faucet_address_lower).execute()
+        supabase.table("faucet_tasks").delete().eq("faucet_address", faucet_address_lower).execute()
+        supabase.table("faucet_x_templates").delete().eq("faucet_address", faucet_address_lower).execute()
 
+        # 5. Record deletion (Optional: store as checksum or lower, depending on preference)
+        await record_deleted_faucet(faucet_address_checksum, user_address_checksum, request.chainId)
+        
         return {
             "success": True,
-            "faucetAddress": faucet_address,
+            "faucetAddress": faucet_address_checksum,
             "message": "Faucet marked as deleted and metadata cleaned up."
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        print(f"💥 Error processing faucet metadata deletion: {str(e)}")
+        print(f"💥 Error processing deletion: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to delete metadata: {str(e)}")
-
+    
 @app.get("/faucet-x-template/{faucetAddress}")
 async def get_faucet_x_template(faucetAddress: str):
     """Get custom X post template for a faucet"""
