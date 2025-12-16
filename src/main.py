@@ -1,7 +1,8 @@
-from fastapi import FastAPI, HTTPException, Request, APIRouter
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import UploadFile, File, Depends
 from pydantic import BaseModel, Field, ConfigDict
+
 from web3 import Web3
 # FIX: Use Web3's constants for ADDRESS_ZERO
 from web3.constants import ADDRESS_ZERO as ZeroAddress
@@ -1967,7 +1968,10 @@ class SetClaimParametersRequest(BaseModel):
     tasks: Optional[List[FaucetTask]] = None
 class GetSecretCodeRequest(BaseModel):
     faucetAddress: str
-   
+
+class SubmissionUpdate(BaseModel):
+    status: str  # 'approved' or 'rejected'
+
 class AdminPopupPreferenceRequest(BaseModel):
     userAddress: str
     faucetAddress: str
@@ -2001,6 +2005,14 @@ class FaucetMetadata(BaseModel):
     imageUrl: Optional[str] = None
     createdBy: str
     chainId: int
+
+class QuestUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    rewardPool: Optional[str] = None
+    imageUrl: Optional[str] = None
+    isActive: Optional[bool] = None
+
 # CHAIN CONFIGURATION
 CHAIN_INFO = {
     # Ethereum
@@ -2067,7 +2079,54 @@ class AnalyticsDataManager:
             print(f"❌ Error storing analytics data for {key}: {str(e)}")
             return False
    
-   
+    # --- HELPER FUNCTIONS FOR QUEST LOGIC ---
+
+async def get_quest_context(faucet_address: str):
+    """
+    Fetches the Stage Requirements and Task List from the DB to verify points and stages.
+    """
+    try:
+        # 1. Fetch Stage Requirements from 'quests' table
+        quest_response = supabase.table("quests").select("stage_pass_requirements").eq("faucet_address", faucet_address).execute()
+        if not quest_response.data:
+            return None, None
+            
+        stage_reqs = quest_response.data[0].get("stage_pass_requirements", {})
+        # Handle case where it might be stored as a JSON string
+        if isinstance(stage_reqs, str):
+            stage_reqs = json.loads(stage_reqs)
+
+        # 2. Fetch Tasks from 'faucet_tasks' table
+        tasks_response = supabase.table("faucet_tasks").select("tasks").eq("faucet_address", faucet_address).execute()
+        tasks = tasks_response.data[0].get("tasks", []) if tasks_response.data else []
+
+        return stage_reqs, tasks
+    except Exception as e:
+        print(f"Error fetching quest context: {e}")
+        return None, None
+
+def calculate_current_stage(stage_points: Dict[str, int], requirements: Dict[str, int]) -> str:
+    """Calculates the highest unlocked stage based on points."""
+    stages = ['Beginner', 'Intermediate', 'Advance', 'Legend', 'Ultimate']
+    current_stage = 'Beginner'
+    
+    for i, stage in enumerate(stages):
+        # Default requirement to 0 if not set, strict inequality vs >= depends on your rules
+        req = requirements.get(stage, 0)
+        points = stage_points.get(stage, 0)
+        
+        if points >= req and req > 0:
+            # If we pass this stage, we are at least in the next stage (if it exists)
+            if i + 1 < len(stages):
+                current_stage = stages[i + 1]
+            else:
+                current_stage = stage # Max level
+        else:
+            # If we don't pass this stage, we stay at the current calculation
+            break
+            
+    return current_stage
+
     async def get_analytics_data(self, key: str) -> Optional[Any]:
         """Get analytics data from Supabase"""
         try:
@@ -2247,7 +2306,38 @@ class AnalyticsDataManager:
         except Exception as e:
             print(f"❌ Error fetching transactions from {network['name']}: {str(e)}")
             return []
-        
+    def get_quest_data(faucet_address: str):
+        """
+        In a real app, you fetch this from a 'quests' table.
+        For now, we return the hardcoded structure you used in the frontend,
+        or you can store this JSON in Supabase.
+        """
+        # ... logic to fetch quest details ...
+        # This is a placeholder for the static quest data structure
+        return {
+            "stagePassRequirements": {
+                "Beginner": 100, "Intermediate": 300, "Advance": 600, "Legend": 1000, "Ultimate": 2000
+            },
+            "tasks": [
+                {"id": "t1", "title": "Follow Twitter", "points": 50, "stage": "Beginner", "verificationType": "manual_link"},
+                # ... other tasks
+            ]
+        }
+
+def calculate_new_stage(current_points: Dict[str, int], requirements: Dict[str, int]) -> str:
+    stages = ['Beginner', 'Intermediate', 'Advance', 'Legend', 'Ultimate']
+    current_stage = 'Beginner'
+    
+    for i, stage in enumerate(stages):
+        if current_points.get(stage, 0) >= requirements.get(stage, 0):
+            if i + 1 < len(stages):
+                current_stage = stages[i + 1]
+            else:
+                current_stage = stage
+        else:
+            break
+    return current_stage
+
     def process_faucets_for_chart(self, faucets_data: List[Dict]) -> List[Dict]:
         """Process faucets data for chart display"""
         try:
@@ -6272,6 +6362,352 @@ async def get_user_usdt_status(
     except Exception as e:
         print(f"Error getting user status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get user status: {str(e)}")
+
+@app.put("/api/quests/{faucet_address}")
+async def update_quest_details(
+    faucet_address: str, 
+    update: QuestUpdate
+):
+    """
+    Update Quest Details (Admin Only)
+    """
+    try:
+        # 1. Verify Quest Exists
+        # (In production, also verify the request comes from the creator)
+        
+        # 2. Prepare Update Data
+        # We only update fields that are not None
+        update_data = {k: v for k, v in update.dict().items() if v is not None}
+        
+        if not update_data:
+            return {"success": False, "message": "No data provided"}
+
+        # 3. Update in Supabase
+        # Assuming you have a 'quests' table. 
+        # If using the mock structure from previous steps, we just return success.
+        # REAL DB CALL EXAMPLE:
+        # response = supabase.table("quests").update(update_data).eq("faucet_address", faucet_address).execute()
+        
+        return {
+            "success": True, 
+            "message": "Quest updated successfully",
+            "updatedFields": update_data
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/quests/{faucet_address}/progress/{wallet_address}")
+async def get_user_progress(faucet_address: str, wallet_address: str):
+    """
+    Get real user progress from Supabase. Initializes new users if they don't exist.
+    """
+    try:
+        # Validate addresses
+        faucet_checksum = Web3.to_checksum_address(faucet_address)
+        wallet_checksum = Web3.to_checksum_address(wallet_address)
+
+        # 1. Fetch User Progress Record
+        response = supabase.table("user_progress")\
+            .select("*")\
+            .eq("wallet_address", wallet_checksum)\
+            .eq("faucet_address", faucet_checksum)\
+            .execute()
+        
+        user_data = None
+
+        # 2. Initialize if new user
+        if not response.data:
+            new_profile = {
+                "wallet_address": wallet_checksum,
+                "faucet_address": faucet_checksum,
+                "total_points": 0,
+                "stage_points": {"Beginner": 0, "Intermediate": 0, "Advance": 0, "Legend": 0, "Ultimate": 0},
+                "completed_tasks": [],
+                "current_stage": "Beginner"
+            }
+            # Insert and return the new row
+            insert_res = supabase.table("user_progress").insert(new_profile).execute()
+            if insert_res.data:
+                user_data = insert_res.data[0]
+        else:
+            user_data = response.data[0]
+
+        if not user_data:
+            raise HTTPException(status_code=500, detail="Failed to retrieve or create user progress")
+
+        # 3. Fetch User Submissions
+        subs_response = supabase.table("submissions")\
+            .select("*")\
+            .eq("wallet_address", wallet_checksum)\
+            .eq("faucet_address", faucet_checksum)\
+            .execute()
+        
+        submissions_data = subs_response.data or []
+
+        # 4. Format for Frontend (Snake_case DB -> CamelCase API)
+        formatted_progress = {
+            "totalPoints": user_data['total_points'],
+            "stagePoints": user_data['stage_points'],
+            "completedTasks": user_data['completed_tasks'] or [],
+            "currentStage": user_data['current_stage'],
+            "submissions": [
+                {
+                    "submissionId": s['submission_id'],
+                    "taskId": s['task_id'],
+                    "taskTitle": s['task_title'],
+                    "status": s['status'],
+                    "submittedData": s['submitted_data'],
+                    "submittedAt": s['submitted_at'],
+                    "notes": s['notes']
+                } 
+                for s in submissions_data
+            ]
+        }
+
+        return {"success": True, "progress": formatted_progress}
+
+    except Exception as e:
+        print(f"Error getting progress: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/api/quests/{faucet_address}/submissions")
+async def submit_task(
+    faucet_address: str,
+    walletAddress: str = Form(...),
+    taskId: str = Form(...),
+    submittedData: str = Form(None), # URL or Text
+    notes: str = Form(""),
+    submissionType: str = Form(...),
+    file: Optional[UploadFile] = File(None)
+):
+    try:
+        faucet_checksum = Web3.to_checksum_address(faucet_address)
+        wallet_checksum = Web3.to_checksum_address(walletAddress)
+
+        final_data_link = submittedData
+
+        # 1. Handle File Upload (if present)
+        if file:
+            # Validate file size/type here if needed (e.g. < 5MB)
+            file_ext = file.filename.split(".")[-1]
+            file_path = f"{faucet_checksum}/{wallet_checksum}/{uuid.uuid4()}.{file_ext}"
+            file_content = await file.read()
+            
+            # Upload to Supabase Storage
+            storage_response = supabase.storage.from_("quest-proofs").upload(
+                file_path, 
+                file_content, 
+                {"content-type": file.content_type, "upsert": "false"}
+            )
+            
+            # Get Public URL
+            final_data_link = supabase.storage.from_("quest-proofs").get_public_url(file_path)
+
+        # 2. Get Task Title (for easier admin display)
+        # Fetch tasks to find the title
+        _, tasks = await get_quest_context(faucet_checksum)
+        task_title = "Unknown Task"
+        if tasks:
+            found_task = next((t for t in tasks if t['id'] == taskId), None)
+            if found_task:
+                task_title = found_task.get('title', 'Unknown Task')
+
+        # 3. Insert Submission Record
+        submission_entry = {
+            "faucet_address": faucet_checksum,
+            "wallet_address": wallet_checksum,
+            "task_id": taskId,
+            "task_title": task_title,
+            "submitted_data": final_data_link,
+            "notes": notes,
+            "submission_type": submissionType,
+            "status": "pending",
+            "submitted_at": datetime.utcnow().isoformat()
+        }
+        
+        res = supabase.table("submissions").insert(submission_entry).execute()
+        
+        if not res.data:
+             raise HTTPException(status_code=500, detail="Failed to save submission")
+
+        return {"success": True, "message": "Submission received", "submissionId": res.data[0]['submission_id']}
+
+    except Exception as e:
+        print(f"Submission error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/quests/{faucet_address}/submissions/{submission_id}")
+async def update_submission(
+    faucet_address: str,
+    submission_id: str,
+    update: SubmissionUpdate
+):
+    try:
+        faucet_checksum = Web3.to_checksum_address(faucet_address)
+
+        # 1. Update status in 'submissions' table
+        now = datetime.utcnow().isoformat()
+        sub_update = supabase.table("submissions").update({
+            "status": update.status, 
+            "reviewed_at": now
+        }).eq("submission_id", submission_id).execute()
+
+        if not sub_update.data:
+            raise HTTPException(status_code=404, detail="Submission not found")
+        
+        submission = sub_update.data[0]
+        wallet_checksum = submission['wallet_address']
+        task_id = submission['task_id']
+
+        # 2. Logic for Approval
+        if update.status == "approved":
+            # A. Fetch Context (Requirements and Task Data)
+            stage_reqs, tasks = await get_quest_context(faucet_checksum)
+            
+            if not tasks:
+                raise HTTPException(status_code=500, detail="Quest tasks configuration not found")
+
+            # Find the specific task to get points and stage
+            task = next((t for t in tasks if t['id'] == task_id), None)
+            
+            if task:
+                points_to_add = int(task.get('points', 0))
+                task_stage = task.get('stage', 'Beginner')
+
+                # B. Fetch Current User Progress
+                prog_res = supabase.table("user_progress")\
+                    .select("*")\
+                    .eq("wallet_address", wallet_checksum)\
+                    .eq("faucet_address", faucet_checksum)\
+                    .execute()
+                
+                if not prog_res.data:
+                    raise HTTPException(status_code=404, detail="User progress not found")
+                
+                curr_prog = prog_res.data[0]
+                
+                # C. Calculate New Values
+                # Update Total Points
+                new_total = curr_prog['total_points'] + points_to_add
+                
+                # Update Stage Points (JSONB)
+                current_stage_points = curr_prog['stage_points'] or {}
+                # Ensure keys exist
+                if task_stage not in current_stage_points:
+                    current_stage_points[task_stage] = 0
+                current_stage_points[task_stage] += points_to_add
+                
+                # Update Completed Tasks (Array)
+                completed_list = curr_prog['completed_tasks'] or []
+                if task_id not in completed_list:
+                    completed_list.append(task_id)
+
+                # Calculate New Stage Level
+                new_stage_name = calculate_current_stage(current_stage_points, stage_reqs) if stage_reqs else curr_prog['current_stage']
+
+                # D. Commit Updates to DB
+                supabase.table("user_progress").update({
+                    "total_points": new_total,
+                    "stage_points": current_stage_points,
+                    "completed_tasks": completed_list,
+                    "current_stage": new_stage_name
+                }).eq("wallet_address", wallet_checksum).eq("faucet_address", faucet_checksum).execute()
+
+        return {"success": True, "message": f"Submission {update.status}"}
+
+    except Exception as e:
+        print(f"Update submission error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/quests/{faucet_address}/submissions/pending")
+async def get_pending_submissions_endpoint(faucet_address: str):
+    try:
+        faucet_checksum = Web3.to_checksum_address(faucet_address)
+        
+        # Query submissions where status is 'pending'
+        response = supabase.table("submissions")\
+            .select("*")\
+            .eq("faucet_address", faucet_checksum)\
+            .eq("status", "pending")\
+            .order("submitted_at", desc=True)\
+            .execute()
+        
+        formatted = [
+            {
+                "submissionId": s['submission_id'],
+                "walletAddress": s['wallet_address'],
+                "taskId": s['task_id'],
+                "taskTitle": s['task_title'],
+                "submittedData": s['submitted_data'],
+                "notes": s['notes'],
+                "submittedAt": s['submitted_at']
+            } for s in response.data
+        ]
+        return {"success": True, "submissions": formatted, "count": len(formatted)}
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/quests/{faucet_address}/leaderboard")
+async def get_leaderboard_endpoint(faucet_address: str):
+    try:
+        faucet_checksum = Web3.to_checksum_address(faucet_address)
+
+        # 1. Get top 50 users by total_points from progress table
+        progress_response = supabase.table("user_progress")\
+            .select("wallet_address, total_points, completed_tasks")\
+            .eq("faucet_address", faucet_checksum)\
+            .order("total_points", desc=True)\
+            .limit(50)\
+            .execute()
+        
+        progress_data = progress_response.data or []
+        
+        if not progress_data:
+            return {"success": True, "leaderboard": []}
+
+        # 2. Extract wallet addresses to fetch profiles
+        wallet_addresses = [row['wallet_address'] for row in progress_data]
+
+        # 3. Fetch profiles for these users
+        profiles_response = supabase.table("user_profiles")\
+            .select("wallet_address, username, avatar_url")\
+            .in_("wallet_address", wallet_addresses)\
+            .execute()
+            
+        # Create a lookup dictionary for profiles
+        # Format: { '0x123...': { 'username': 'JohnDoe', 'avatar': 'http...' } }
+        profiles_map = {
+            p['wallet_address']: p for p in profiles_response.data
+        }
+
+        # 4. Merge Data
+        leaderboard = []
+        for i, row in enumerate(progress_data):
+            wallet = row['wallet_address']
+            profile = profiles_map.get(wallet, {})
+            
+            # Use Username if available, otherwise fallback to shortened address
+            username = profile.get('username')
+            if not username:
+                username = f"{wallet[:6]}...{wallet[-4:]}"
+            
+            leaderboard.append({
+                "rank": i + 1,
+                "walletAddress": wallet,
+                "username": username,
+                "avatarUrl": profile.get('avatar_url'),
+                "points": row['total_points'],
+                "completedTasks": len(row['completed_tasks'] or [])
+            })
+            
+        return {"success": True, "leaderboard": leaderboard}
+
+    except Exception as e:
+        print(f"Leaderboard error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/usdt-contracts")
 async def get_usdt_contracts():
     """Get known USDT contract addresses for supported networks."""
