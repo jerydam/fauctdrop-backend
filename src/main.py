@@ -4059,24 +4059,26 @@ async def delete_faucet_metadata_endpoint(request: DeleteFaucetRequest):
         faucet_address = Web3.to_checksum_address(request.faucetAddress)
         user_address = Web3.to_checksum_address(request.userAddress)
         
-        # 1. Authorize the user (Crucial security step)
+        # 1. Authorize the user
         w3 = await get_web3_instance(request.chainId)
         is_authorized = await check_user_is_authorized_for_faucet(w3, faucet_address, user_address)
         if not is_authorized:
-            raise HTTPException(
-                status_code=403, 
-                detail="Access denied. Only the faucet owner/admin can finalize deletion metadata."
-            )
+            raise HTTPException(status_code=403, detail="Access denied.")
         
-        # 2. Record the deletion in the new table
+        # 2. Record the deletion
         await record_deleted_faucet(faucet_address, user_address, request.chainId)
 
-        # 3. Clean up other metadata (good practice)
+        # 3. Clean up other metadata
         supabase.table("faucet_metadata").delete().eq("faucet_address", faucet_address).execute()
         supabase.table("faucet_tasks").delete().eq("faucet_address", faucet_address).execute()
         supabase.table("faucet_x_templates").delete().eq("faucet_address", faucet_address).execute()
         
-        print(f"✅ Metadata cleaned up for deleted faucet: {faucet_address}")
+        # --- ADD THIS LINE HERE ---
+        # 4. Remove from the user's dashboard list
+        supabase.table("userfaucets").delete().eq("faucet_address", faucet_address).execute()
+        # --------------------------
+        
+        print(f"✅ Metadata and registry cleaned up for deleted faucet: {faucet_address}")
 
         return {
             "success": True,
@@ -4089,7 +4091,6 @@ async def delete_faucet_metadata_endpoint(request: DeleteFaucetRequest):
     except Exception as e:
         print(f"💥 Error processing faucet metadata deletion: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to delete metadata: {str(e)}")
-
 
 @app.get("/faucet-x-template/{faucetAddress}")
 async def get_faucet_x_template(faucetAddress: str):
