@@ -3902,28 +3902,46 @@ async def claim_tokens_custom(w3: Web3, faucet_address: str, user_address: str, 
         print(f"ERROR in claim_tokens_custom: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to claim tokens: {str(e)}")
 # Enhanced set_claim_parameters function for ALL faucet types
+# Updated set_claim_parameters function to APPEND tasks instead of overwriting
+
 async def set_claim_parameters(faucetAddress: str, start_time: int, end_time: int, tasks: Optional[List[Dict]] = None) -> str:
     try:
-        # Generate secret code for dropcode faucets (still needed for dropcode)
+        # 1. Generate secret code for dropcode faucets (still needed for dropcode)
         secret_code = await generate_secret_code()
         await store_secret_code(faucetAddress, secret_code, start_time, end_time)
-       
-        # Store tasks for ALL faucet types (not just dropcode)
+        
+        # 2. Handle Task Merging
         if tasks:
-            print(f"📝 Storing {len(tasks)} tasks for faucet {faucetAddress}")
-           
-            # Store tasks (use backend signer as creator for set-claim-parameters calls)
-            await store_faucet_tasks(faucetAddress, tasks, signer.address)
-            print(f"✅ Successfully stored {len(tasks)} tasks for faucet {faucetAddress}")
-       
+            print(f"📝 Processing tasks for faucet {faucetAddress}")
+            
+            # A. Fetch Existing Tasks first
+            existing_tasks = []
+            try:
+                existing_data = await get_faucet_tasks(faucetAddress)
+                if existing_data and "tasks" in existing_data:
+                    existing_tasks = existing_data["tasks"]
+                    print(f"found {len(existing_tasks)} existing tasks.")
+            except Exception as e:
+                print(f"No existing tasks found or DB error: {e}")
+
+            # B. Combine Existing + New Tasks
+            # Note: This simply appends. If you want to prevent duplicates, 
+            # you would need to filter by URL or ID here.
+            combined_tasks = existing_tasks + tasks
+            
+            # C. Store the Combined List (Use backend signer as creator for set-claim-parameters calls)
+            await store_faucet_tasks(faucetAddress, combined_tasks, signer.address)
+            print(f"✅ Successfully stored {len(combined_tasks)} total tasks (appended) for faucet {faucetAddress}")
+        
         print(f"🔐 Generated secret code for {faucetAddress}: {secret_code}")
         return secret_code
-       
+        
     except HTTPException as e:
         raise e
     except Exception as e:
         print(f"ERROR in set_claim_parameters: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to set parameters: {str(e)}")
+
 # Helper function to check if user is platform owner
 async def check_platform_owner_authorization(user_address: str) -> bool:
     """Check if user address is the platform owner"""
