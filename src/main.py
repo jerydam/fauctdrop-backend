@@ -4104,6 +4104,44 @@ async def generate_new_drop_code_only(faucet_address: str) -> str:
     except Exception as e:
         print(f"ERROR in generate_new_drop_code_only: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate new drop code: {str(e)}")
+    
+@app.get("/api/check-name")
+async def check_quest_name_availability(name: str):
+    """
+    Checks if a Quest Name (title) already exists in the database.
+    Used by the frontend to provide real-time validation.
+    """
+    try:
+        clean_name = name.strip()
+        
+        if not clean_name or len(clean_name) < 3:
+            return {
+                "exists": False, 
+                "valid": False, 
+                "message": "Name must be at least 3 characters"
+            }
+
+        # Query Supabase 'quests' table
+        # We use .ilike() for case-insensitive matching to prevent duplicate confusion
+        response = supabase.table("quests")\
+            .select("title")\
+            .ilike("title", clean_name)\
+            .execute()
+
+        # If we get any rows back, the name exists
+        exists = len(response.data) > 0
+
+        return {
+            "exists": exists,
+            "valid": True,
+            "message": "Name is already taken" if exists else "Name is available"
+        }
+
+    except Exception as e:
+        print(f"💥 Error checking name availability: {str(e)}")
+        # Don't block the UI on error, just assume valid but log it
+        return {"exists": False, "valid": True, "error": str(e)}
+
 @app.post("/faucet-x-template")
 async def save_faucet_x_template(request: CustomXPostTemplate):
     """Save custom X post template for a faucet"""
