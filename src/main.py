@@ -4141,6 +4141,78 @@ async def check_quest_name_availability(name: str):
         print(f"💥 Error checking name availability: {str(e)}")
         # Don't block the UI on error, just assume valid but log it
         return {"exists": False, "valid": True, "error": str(e)}
+@app.get("/api/profile/user/{username}")
+async def get_profile_by_username(username: str):
+    """
+    Used for shareable links. Finds a profile by username string.
+    """
+    try:
+        # Search case-insensitive
+        response = supabase.table("user_profiles")\
+            .select("*")\
+            .ilike("username", username)\
+            .execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail="User not found")
+            
+        return {
+            "success": True, 
+            "profile": response.data[0]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/profile/update")
+async def update_user_profile(request: UserProfileUpdate):
+    """
+    Updates or creates a user profile. 
+    Verifies that the request is signed by the wallet owner.
+    """
+    try:
+        # 1. Standardize the address
+        wallet_address = Web3.to_checksum_address(request.wallet_address)
+        
+        # 2. Security: Verify the signature
+        # This prevents anyone from updating someone else's profile by just knowing their address
+        if not verify_signature(wallet_address, request.message, request.signature):
+            raise HTTPException(status_code=401, detail="Invalid signature. Ownership verification failed.")
+
+        # 3. Prepare the data for Supabase
+        # We use snake_case to match standard PostgreSQL/Supabase column naming
+        profile_data = {
+            "wallet_address": wallet_address.lower(), # Store as lowercase for easier lookup
+            "username": request.username,
+            "email": request.email,
+            "bio": request.bio,
+            "twitter_handle": request.twitter_handle,
+            "discord_handle": request.discord_handle,
+            "telegram_handle": request.telegram_handle,
+            "farcaster_handle": request.farcaster_handle,
+            "avatar_url": request.avatar_url,
+            "updated_at": datetime.now().isoformat()
+        }
+
+        # 4. Upsert into Supabase 'user_profiles' table
+        response = supabase.table("user_profiles").upsert(
+            profile_data, 
+            on_conflict="wallet_address"
+        ).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=500, detail="Failed to save profile to database")
+            
+        return {
+            "success": True, 
+            "message": "Profile updated successfully", 
+            "profile": response.data[0]
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"💥 Profile Update Error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error during profile update")
 
 @app.post("/faucet-x-template")
 async def save_faucet_x_template(request: CustomXPostTemplate):
