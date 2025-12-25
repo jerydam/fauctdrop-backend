@@ -4141,6 +4141,21 @@ async def check_quest_name_availability(name: str):
         print(f"💥 Error checking name availability: {str(e)}")
         # Don't block the UI on error, just assume valid but log it
         return {"exists": False, "valid": True, "error": str(e)}
+
+@app.get("/api/profile/user/{identifier}")
+async def get_profile_by_username_or_address(identifier: str):
+    # 1. Try searching by Username
+    response = supabase.table("user_profiles").select("*").ilike("username", identifier).execute()
+    
+    # 2. If not found, try searching by Wallet Address
+    if not response.data:
+        response = supabase.table("user_profiles").select("*").eq("wallet_address", identifier.lower()).execute()
+        
+    if not response.data:
+        raise HTTPException(status_code=404, detail="User not found")
+            
+    return {"success": True, "profile": response.data[0]}
+
 @app.get("/api/profile/user/{username}")
 async def get_profile_by_username(username: str):
     """
@@ -5182,24 +5197,33 @@ async def add_faucet_tasks_endpoint(request: AddTasksRequest):
 
 # --- USER PROFILE ENDPOINTS ---
 
+# This is the endpoint the WalletConnectButton calls
 @app.get("/api/profile/{wallet_address}")
 async def get_user_profile_data(wallet_address: str):
-    """Fetch user profile details."""
+    """
+    Called by the Wallet Button. 
+    Standardizes the address to lowercase to find the user.
+    """
     try:
-        if not Web3.is_address(wallet_address):
-            raise HTTPException(status_code=400, detail="Invalid address")
-            
-        checksum_address = Web3.to_checksum_address(wallet_address)
+        # Standardize input
+        search_address = wallet_address.lower()
         
-        response = supabase.table("user_profiles").select("*").eq("wallet_address", checksum_address).execute()
+        # Query Supabase
+        response = supabase.table("user_profiles")\
+            .select("*")\
+            .eq("wallet_address", search_address)\
+            .execute()
         
-        if response.data:
+        if response.data and len(response.data) > 0:
+            # Found the user! Return their custom username
             return {"success": True, "profile": response.data[0]}
         else:
-            return {"success": True, "profile": None, "message": "Profile not found"}
+            # User truly doesn't have a profile yet
+            return {"success": True, "profile": None, "message": "New User"}
             
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error in wallet profile fetch: {e}")
+        raise HTTPException(status_code=500, detail="Database error")
 
 @app.post("/api/profile/update")
 async def update_user_profile(request: UserProfileUpdate):
