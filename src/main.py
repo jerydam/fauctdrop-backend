@@ -1,9 +1,10 @@
+from __future__ import annotations
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import UploadFile, File, Depends
 from pydantic import BaseModel, Field, ConfigDict
-
 from web3 import Web3
+from typing import Union
 # FIX: Use Web3's constants for ADDRESS_ZERO
 from web3.constants import ADDRESS_ZERO as ZeroAddress
 from typing import Dict, Tuple, List, Optional, Any
@@ -37,22 +38,7 @@ except ImportError:
     def get_rpc_url(chain_id):
         return os.getenv(f"RPC_URL_{chain_id}") or "http://127.0.0.1:8545" # Dummy RPC
     print("WARNING: Using dummy config due to missing 'config.py'")
-# --- REQUIRED LOCAL IMPORTS (Assume these files exist) ---
-# NOTE: The ImportError you fixed previously was likely because you needed to change
-# these to absolute imports: `from database import get_db` and `from models import Quest`.
-# Since the full file isn't available, I will mock the required models and assume
-# you will handle the necessary `database.py` and `models.py` imports.
-# MOCK/PLACEHOLDER FOR LOCAL IMPORTS (REPLACE WITH REAL IMPORTS IF USING ORM)
-# If you are using FastAPI modularity, uncomment and fix these:
-# try:
-# from database import get_db
-# from models import Quest, QuestSubmission
-# except ImportError as e:
-# print(f"CRITICAL WARNING: Database dependencies failed to import: {e}. Quest endpoints will fail.")
-   
-# --- MOCK DB FUNCTIONS AND MODELS ---
-# Since the full DB structure isn't here, we'll redefine the missing components for the sake of completion.
-# Dummy get_db function
+
 async def get_db():
     print("MOCK DB: Yielding dummy session.")
     # In a real app, this would yield an AsyncSession
@@ -1755,13 +1741,13 @@ signer = Account.from_key(PRIVATE_KEY)
 # Platform owner address
 PLATFORM_OWNER = "0x9fBC2A0de6e5C5Fd96e8D11541608f5F328C0785"
 # --- NEW QUEST PYDANTIC MODELS ---
-class StagePassRequirements(BaseModel):
-    Beginner: int
-    Intermediate: int
-    Advance: int
-    Legend: int
-    Ultimate: int
 
+class StagePassRequirements(BaseModel):
+    Beginner: int = 0
+    Intermediate: int = 0
+    Advance: int = 0
+    Legend: int = 0
+    Ultimate: int = 0
 # Request model for availability check
 class AvailabilityCheckRequest(BaseModel):
     field: str  # e.g., "username", "email", "twitter_handle"
@@ -1772,23 +1758,58 @@ class DeleteFaucetRequest(BaseModel):
     faucetAddress: str
     userAddress: str # The initiator of the deletion
     chainId: int
+class QuestDraft(BaseModel):
+    creatorAddress: str
+    title: str
+    description: str
+    imageUrl: str
+    rewardPool: str
+    rewardTokenType: str
+    tokenAddress: str
+    distributionConfig: dict
+    faucetAddress: str  # Will be set after deployment
 
 class QuestTask(BaseModel):
     id: str
     title: str
-    description: str
-    points: int = 100
-    required: bool = True
-    category: str = "social"
-    url: str
-    action: str
+    description: Optional[str] = None
+    points: Union[int, str]
+    required: bool
+    category: str
+    url: Optional[str] = None
+    action: Optional[str] = None
     verificationType: str
     targetPlatform: Optional[str] = None
-    targetHandle: Optional[str] = None
-    targetContractAddress: Optional[str] = None
-    targetChainId: Optional[str] = None
     stage: str
-    minReferrals: Optional[int] = None
+
+class QuestDraft(BaseModel):
+    faucetAddress: str  
+    creatorAddress: str
+    title: str
+    description: Optional[str] = ""
+    imageUrl: Optional[str] = ""
+    rewardPool: Optional[str] = "0"
+    rewardTokenType: Optional[str] = "native"
+    tokenAddress: Optional[str] = None
+    distributionConfig: Optional[Dict] = {}
+
+class QuestFinalize(BaseModel):
+    faucetAddress: str 
+    draftId: Optional[str] = None
+    
+    creatorAddress: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    imageUrl: Optional[str] = None
+    
+    startDate: str
+    endDate: str
+    claimWindowHours: int
+    tasks: List[QuestTask]
+    
+    # 2. Use the correctly defined class here
+    stagePassRequirements: StagePassRequirements 
+    enforceStageRules: bool = False
 
 class Quest(BaseModel):
     creatorAddress: str
@@ -4949,79 +4970,73 @@ async def save_quest(request: Quest):
 @app.get("/api/quests/{faucetAddress}", tags=["Quest Management"])
 async def get_quest_by_address(faucetAddress: str):
     """
-    Fetch a single quest by faucet address with full details including tasks, image, and stage requirements.
+    Fetch a single quest by faucet address OR draft ID.
+    Handles strict address validation bypass for drafts.
     """
     try:
-        print(f"🔍 Fetching quest details for faucet: {faucetAddress}")
+        print(f"🔍 Fetching quest details for: {faucetAddress}")
         
-        if not Web3.is_address(faucetAddress):
-            raise HTTPException(status_code=400, detail="Invalid faucet address format")
-        
-        faucet_address = Web3.to_checksum_address(faucetAddress)
-        
+        # --- FIX STARTS HERE ---
+        # Allow Draft IDs (strings) to pass through. Only checksum if it looks like an EVM address.
+        if Web3.is_address(faucetAddress):
+            faucet_address = Web3.to_checksum_address(faucetAddress)
+        else:
+            faucet_address = faucetAddress # It's a Draft ID (e.g. "draft-uuid...")
+        # --- FIX ENDS HERE ---
+
         # 1. Fetch quest from database
         response = supabase.table("quests").select("*").eq(
             "faucet_address", faucet_address
         ).execute()
         
-        if not response.data or len(response.data) == 0:
-            raise HTTPException(status_code=404, detail=f"Quest not found for faucet address: {faucet_address}")
+        if not response.data:
+            raise HTTPException(status_code=404, detail=f"Quest not found: {faucet_address}")
         
         quest_row = response.data[0]
         
         # 2. Fetch tasks
-        tasks_response = supabase.table("faucet_tasks").select("tasks").eq(
+        tasks = []
+        tasks_res = supabase.table("faucet_tasks").select("tasks").eq(
             "faucet_address", faucet_address
         ).execute()
         
-        tasks = []
-        if tasks_response.data and len(tasks_response.data) > 0:
-            tasks = tasks_response.data[0].get("tasks", [])
+        if tasks_res.data:
+            tasks = tasks_res.data[0].get("tasks", [])
         
-        # 3. Fetch participants count
-        try:
-            participants_response = supabase.table("quest_submissions").select(
-                "user_address", count="exact"
-            ).eq("faucet_address", faucet_address).execute()
-            
-            participants_count = participants_response.count if hasattr(participants_response, 'count') else 0
-        except Exception:
-            participants_count = 0
-        
-        # 4. Parse dates
-        start_date = datetime.fromisoformat(quest_row.get("start_date").replace('Z', '+00:00')).strftime('%Y-%m-%d')
-        end_date = datetime.fromisoformat(quest_row.get("end_date").replace('Z', '+00:00')).strftime('%Y-%m-%d')
-        
-        # 5. Handle stage_pass_requirements (ensure it's parsed if stored as string JSON)
-        stage_pass_requirements = quest_row.get("stage_pass_requirements")
-        if isinstance(stage_pass_requirements, str):
+        # 3. Parse Metadata (Dates & JSON)
+        start_date = None
+        if quest_row.get("start_date"): 
+            start_date = datetime.fromisoformat(quest_row.get("start_date").replace('Z', '+00:00')).strftime('%Y-%m-%d')
+
+        end_date = None
+        if quest_row.get("end_date"): 
+            end_date = datetime.fromisoformat(quest_row.get("end_date").replace('Z', '+00:00')).strftime('%Y-%m-%d')
+
+        stage_reqs = quest_row.get("stage_pass_requirements")
+        if isinstance(stage_reqs, str):
             try:
-                stage_pass_requirements = json.loads(stage_pass_requirements)
+                stage_reqs = json.loads(stage_reqs)
             except:
-                stage_pass_requirements = {}
-        
-        # 6. Build full quest data in camelCase
+                stage_reqs = {}
+
+        # 4. Return Data
         quest_data = {
             "faucetAddress": faucet_address,
             "title": quest_row.get("title"),
             "description": quest_row.get("description"),
             "isActive": quest_row.get("is_active", False),
+            "isDraft": quest_row.get("is_draft", False),
             "rewardPool": quest_row.get("reward_pool"),
             "creatorAddress": quest_row.get("creator_address"),
             "startDate": start_date,
             "endDate": end_date,
-            "rewardTokenType": quest_row.get("reward_token_type"),
-            "tokenAddress": quest_row.get("token_address"),
-            "imageUrl": quest_row.get("image_url"), 
-            "stagePassRequirements": stage_pass_requirements,
             "tasks": tasks,
-            "tasksCount": len(tasks),
-            "participantsCount": participants_count,
-            "createdAt": quest_row.get("created_at"),
-            "updatedAt": quest_row.get("updated_at")
+            "imageUrl": quest_row.get("image_url"),
+            "stagePassRequirements": stage_reqs,
+            "distributionConfig": quest_row.get("distribution_config"),
+            "tokenAddress": quest_row.get("token_address"),
+            "rewardTokenType": quest_row.get("reward_token_type")
         }
-        
-        print(f"✅ Successfully fetched quest details for {faucet_address}")
         
         return {"success": True, "quest": quest_data}
         
@@ -5030,24 +5045,22 @@ async def get_quest_by_address(faucetAddress: str):
     except Exception as e:
         print(f"❌ Error fetching quest: {str(e)}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to fetch quest: {str(e)}")
-        
+        raise HTTPException(status_code=500, detail=str(e))
 # --- GET ALL QUESTS (Updated to fetch new fields) ---
 
 @app.get("/api/quests", tags=["Quest Management"])
 async def get_all_quests():
     """
-    Fetch all quests from Supabase with computed fields for tasks and participants.
-    UPDATED: Includes image_url and stage_pass_requirements in the data where possible.
+    Fetch all quests from Supabase with computed fields.
+    Handles missing dates gracefully to prevent crashes on drafts.
     """
     try:
         print("🔍 Fetching all quests from Supabase...")
         
-        # Fetch all quests from the quests table
+        # Fetch all quests
         response = supabase.table("quests").select("*").execute()
         
         if not response.data:
-            print("📭 No quests found in database")
             return {"success": True, "quests": [], "message": "No quests found"}
         
         quests_list = []
@@ -5076,40 +5089,49 @@ async def get_all_quests():
                 except Exception:
                     participants_count = 0
                     
-                # Parse dates
-                start_date = datetime.fromisoformat(quest_row.get("start_date").replace('Z', '+00:00')).strftime('%Y-%m-%d')
-                end_date = datetime.fromisoformat(quest_row.get("end_date").replace('Z', '+00:00')).strftime('%Y-%m-%d')
+                # --- FIX: SAFE DATE PARSING ---
+                start_date = None
+                raw_start = quest_row.get("start_date")
+                if raw_start:
+                    start_date = datetime.fromisoformat(raw_start.replace('Z', '+00:00')).strftime('%Y-%m-%d')
+
+                end_date = None
+                raw_end = quest_row.get("end_date")
+                if raw_end:
+                    end_date = datetime.fromisoformat(raw_end.replace('Z', '+00:00')).strftime('%Y-%m-%d')
+                # ------------------------------
                 
-                # Build quest overview in camelCase for frontend
+                # Build quest overview
                 quest_data = {
                     "faucetAddress": faucet_address,
                     "title": quest_row.get("title"),
                     "description": quest_row.get("description"),
                     "isActive": quest_row.get("is_active", False),
+                    "isDraft": quest_row.get("is_draft", False), # Useful for frontend filtering
                     "rewardPool": quest_row.get("reward_pool"),
                     "creatorAddress": quest_row.get("creator_address"),
                     "startDate": start_date,
                     "endDate": end_date,
                     "tasksCount": tasks_count,
                     "participantsCount": participants_count,
-                    "imageUrl": quest_row.get("image_url"), # Include image URL for listing
+                    "imageUrl": quest_row.get("image_url"),
                 }
                 
                 quests_list.append(quest_data)
                 
             except Exception as e:
+                # Log the specific error but don't crash the whole endpoint
                 print(f"⚠️ Error processing quest {quest_row.get('faucet_address', 'unknown')}: {str(e)}")
-                traceback.print_exc()
                 continue
         
-        print(f"✅ Successfully fetched {len(quests_list)} quests from database")
-        
+        print(f"✅ Successfully fetched {len(quests_list)} quests")
         return {"success": True, "quests": quests_list, "count": len(quests_list)}
         
     except Exception as e:
         print(f"❌ Error fetching quests: {str(e)}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to fetch quests: {str(e)}")@app.post("/admin/finalize-rewards")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch quests: {str(e)}")
+
 async def finalize_rewards(request: FinalizeRewardsRequest):
     # Mocking success for demo, actual implementation requires Web3 interaction
     if len(request.winners) != len(request.amounts):
@@ -5123,6 +5145,7 @@ async def finalize_rewards(request: FinalizeRewardsRequest):
         "txHash": "0xMOCKTXHASH",
         "faucetAddress": request.faucetAddress
     }
+
 @app.post("/add-faucet-tasks")
 async def add_faucet_tasks_endpoint(request: AddTasksRequest):
     """Add tasks to a faucet (Appending to existing tasks)."""
@@ -5196,7 +5219,177 @@ async def add_faucet_tasks_endpoint(request: AddTasksRequest):
         raise HTTPException(status_code=500, detail=f"Failed to add tasks: {str(e)}")
 
 # --- USER PROFILE ENDPOINTS ---
+@app.post("/api/quests/draft", tags=["Quest Management"])
+async def save_quest_draft(draft: QuestDraft):
+    try:
+        # VALIDATION CHANGE: Only validate creator address. 
+        # Faucet address might be a "draft-UUID" string now, so we skip Web3.is_address check for it.
+        if not Web3.is_address(draft.creatorAddress):
+            raise HTTPException(status_code=400, detail="Invalid creator address")
 
+        # We keep the UUID or address as is for the DB key
+        faucet_address_val = draft.faucetAddress 
+        if Web3.is_address(faucet_address_val):
+             faucet_address_val = Web3.to_checksum_address(faucet_address_val)
+        
+        creator_address_cs = Web3.to_checksum_address(draft.creatorAddress)
+
+        draft_data_db = {
+            "faucet_address": faucet_address_val,
+            "creator_address": creator_address_cs,
+            "title": draft.title,
+            "description": draft.description,
+            "image_url": draft.imageUrl,
+            "reward_pool": draft.rewardPool,
+            "reward_token_type": draft.rewardTokenType,
+            "token_address": draft.tokenAddress,
+            "distribution_config": draft.distributionConfig,
+            "is_draft": True,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }
+
+        response = supabase.table("quests").upsert(
+            draft_data_db,
+            on_conflict="faucet_address"
+        ).execute()
+
+        if not response.data:
+            raise HTTPException(status_code=500, detail="Failed to save draft")
+
+        return {"success": True, "message": "Draft saved successfully", "faucetAddress": faucet_address_val}
+    except Exception as e:
+        print(f"Error saving draft: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+@app.delete("/api/quests/draft/{draftId}", tags=["Quest Management"])
+async def delete_quest_draft(draftId: str):
+    """
+    Deletes a quest draft and its associated tasks from the database.
+    """
+    try:
+        print(f"🗑️ Deleting draft: {draftId}")
+        
+        # 1. Delete from Quests table
+        # We assume the draftId IS the faucet_address in the DB for drafts
+        response_q = supabase.table("quests").delete().eq("faucet_address", draftId).execute()
+        
+        # 2. Delete from Faucet Tasks table (clean up associated tasks)
+        response_t = supabase.table("faucet_tasks").delete().eq("faucet_address", draftId).execute()
+        
+        # Check if anything was actually deleted (Optional, but good for debugging)
+        # Note: supabase delete returns the deleted rows in .data
+        if not response_q.data and not response_t.data:
+             print("⚠️ Draft not found or already deleted.")
+             # We still return success so the frontend updates the UI
+        
+        return {"success": True, "message": "Draft deleted successfully"}
+        
+    except Exception as e:
+        print(f"❌ Error deleting draft: {str(e)}")
+        # Log stack trace for deeper debugging if needed
+        # traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- FINALIZE QUEST (Phase 2) ---
+@app.post("/api/quests/finalize", tags=["Quest Management"])
+async def finalize_quest(finalize: QuestFinalize):
+    """
+    Finalizes a quest. Fetches missing details from Draft ID if needed.
+    Fixes 'created_by' null error by ensuring creator address is stored with tasks.
+    """
+    try:
+        print(f"🚀 Finalizing Quest. Real Address: {finalize.faucetAddress}")
+
+        if not Web3.is_address(finalize.faucetAddress):
+            raise HTTPException(status_code=400, detail="Invalid faucet address")
+
+        real_address_cs = Web3.to_checksum_address(finalize.faucetAddress)
+        
+        # 1. FETCH DATA FROM DRAFT
+        draft_data = {}
+        if finalize.draftId:
+            draft_res = supabase.table("quests").select("*").eq("faucet_address", finalize.draftId).execute()
+            if draft_res.data:
+                draft_data = draft_res.data[0]
+        
+        # 2. DETERMINE FINAL CREATOR (Critical Step)
+        final_creator = finalize.creatorAddress
+        if not final_creator and draft_data.get("creator_address"):
+            final_creator = draft_data.get("creator_address")
+        
+        if not final_creator:
+            raise HTTPException(status_code=400, detail="Creator address is missing. Cannot finalize.")
+            
+        final_creator = Web3.to_checksum_address(final_creator)
+
+        # 3. MERGE METADATA
+        final_title = finalize.title or draft_data.get("title")
+        final_desc = finalize.description or draft_data.get("description")
+        final_img = finalize.imageUrl or draft_data.get("image_url")
+
+        # 4. UPSERT QUESTS TABLE
+        final_quest_data = {
+            "faucet_address": real_address_cs,
+            "creator_address": final_creator,
+            "title": final_title,
+            "description": final_desc,
+            "image_url": final_img,
+            "reward_pool": draft_data.get("reward_pool"),
+            "reward_token_type": draft_data.get("reward_token_type"),
+            "token_address": draft_data.get("token_address"),
+            "distribution_config": draft_data.get("distribution_config"),
+            "start_date": finalize.startDate,
+            "end_date": finalize.endDate,
+            "claim_window_hours": finalize.claimWindowHours,
+            "stage_pass_requirements": finalize.stagePassRequirements.dict(),
+            "is_draft": False,
+            "is_active": True,
+            "updated_at": datetime.now().isoformat()
+        }
+
+        supabase.table("quests").upsert(final_quest_data, on_conflict="faucet_address").execute()
+
+        # 5. UPSERT FAUCET_TASKS TABLE (Fixed: Added created_by)
+        tasks_data = {
+            "faucet_address": real_address_cs,
+            "created_by": final_creator,  # <--- THIS WAS MISSING
+            "tasks": [t.dict() for t in finalize.tasks],
+            "updated_at": datetime.now().isoformat()
+        }
+        supabase.table("faucet_tasks").upsert(tasks_data, on_conflict="faucet_address").execute()
+
+        # 6. DELETE OLD DRAFT
+        if finalize.draftId and finalize.draftId != finalize.faucetAddress:
+            supabase.table("quests").delete().eq("faucet_address", finalize.draftId).execute()
+            supabase.table("faucet_tasks").delete().eq("faucet_address", finalize.draftId).execute()
+
+        return {"success": True, "message": "Quest finalized and live!"}
+
+    except Exception as e:
+        print(f"❌ Error finalizing quest: {str(e)}")
+        # traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- OPTIONAL: List drafts for user ---
+@app.get("/api/quests/drafts/{creator_address}", tags=["Quest Management"])
+async def get_user_drafts(creator_address: str):
+    try:
+        if not Web3.is_address(creator_address):
+            raise HTTPException(status_code=400, detail="Invalid address")
+
+        creator_cs = Web3.to_checksum_address(creator_address)
+
+        response = supabase.table("quests").select("*").eq(
+            "creator_address", creator_cs
+        ).eq("is_draft", True).execute()
+
+        return {"success": True, "drafts": response.data or []}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
 # This is the endpoint the WalletConnectButton calls
 @app.get("/api/profile/{wallet_address}")
 async def get_user_profile_data(wallet_address: str):
