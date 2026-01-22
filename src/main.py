@@ -74,9 +74,19 @@ if not PRIVATE_KEY or PRIVATE_KEY == "0x" + "0"*64:
 if not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_KEY"):
     print("FATAL: SUPABASE_URL or SUPABASE_KEY not set.")
    
-# Initialize Supabase client (will fail if keys are missing/invalid)
+# Initialize Supabase client
 try:
-    supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+    # CRITICAL CHANGE: Use SUPABASE_SERVICE_ROLE_KEY instead of SUPABASE_KEY
+    service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    supabase_url = os.getenv("SUPABASE_URL")
+    
+    if not service_role_key:
+        print("WARNING: SUPABASE_SERVICE_ROLE_KEY not set. Uploads may fail due to RLS.")
+        # Fallback to standard key if service key is missing (optional)
+        service_role_key = os.getenv("SUPABASE_KEY")
+
+    supabase: Client = create_client(supabase_url, service_role_key)
+    
 except Exception as e:
     print(f"Supabase initialization failed: {e}. API endpoints relying on Supabase will fail.")
    
@@ -4640,6 +4650,51 @@ async def get_droplist_config_endpoint():
     except Exception as e:
         print(f"Error getting droplist config: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get configuration: {str(e)}")
+
+@app.post("/api/upload-image", tags=["Utilities"])
+async def upload_image(file: UploadFile = File(...)):
+    """
+    Uploads an image to Supabase Storage ('quest-images' bucket) 
+    and returns the public URL.
+    """
+    try:
+        # 1. Read file content
+        file_content = await file.read()
+        file_ext = file.filename.split(".")[-1]
+        
+        # 2. Generate unique filename (using uuid)
+        import uuid
+        file_name = f"{uuid.uuid4()}.{file_ext}"
+        
+        # 3. Upload to Supabase Storage
+        # NOTE: Ensure you created a public bucket named 'quest-images'
+        bucket_name = "quest-images"
+        
+        # 'file_options' might be needed depending on supabase-py version, 
+        # usually defaults work for public buckets.
+        res = supabase.storage.from_(bucket_name).upload(
+            path=file_name,
+            file=file_content,
+            file_options={"content-type": file.content_type}
+        )
+        
+        # 4. Get Public URL
+        public_url_res = supabase.storage.from_(bucket_name).get_public_url(file_name)
+        
+        # Check if URL was generated (Supabase-py implementation varies, checking distinct return types)
+        # usually get_public_url returns a string or a dict containing publicURL
+        
+        final_url = public_url_res
+        if not isinstance(final_url, str):
+             # Some versions return specific objects, ensure we get the string
+             final_url = str(final_url)
+
+        return {"success": True, "url": final_url}
+
+    except Exception as e:
+        print(f"❌ Upload Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Image upload failed: {str(e)}")
+
 @app.get("/api/users/{wallet_address}")
 async def get_user_profile_endpoint(wallet_address: str):
     """Get user profile"""
