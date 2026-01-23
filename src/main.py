@@ -1,10 +1,13 @@
 from __future__ import annotations
+import shortuuid
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import UploadFile, File, Depends
 from pydantic import BaseModel, Field, ConfigDict
 from web3 import Web3
+from typing import Optional
 from typing import Union
+from datetime import datetime, timedelta, timezone
 # FIX: Use Web3's constants for ADDRESS_ZERO
 from web3.constants import ADDRESS_ZERO as ZeroAddress
 from typing import Dict, Tuple, List, Optional, Any
@@ -1877,6 +1880,14 @@ class QuestOverview(BaseModel):
         from_attributes=True,
         populate_by_name=True
     )
+
+class JoinQuestRequest(BaseModel):
+    walletAddress: str
+    referralCode: Optional[str] = None # Optional code from the person who invited them
+
+class CheckInRequest(BaseModel):
+    walletAddress: str
+
 # Droplist-specific models (kept for compatibility)
 class DroplistTask(BaseModel):
     title: str
@@ -2158,7 +2169,7 @@ def calculate_current_stage(stage_points: Dict[str, int], requirements: Dict[str
             
     return current_stage
 
-    async def get_analytics_data(self, key: str) -> Optional[Any]:
+async def get_analytics_data(self, key: str) -> Optional[Any]:
         """Get analytics data from Supabase"""
         try:
             response = supabase.table("analytics_cache").select("*").eq("key", key).execute()
@@ -2177,7 +2188,7 @@ def calculate_current_stage(stage_points: Dict[str, int], requirements: Dict[str
         except Exception as e:
             print(f"❌ Error getting analytics data for {key}: {str(e)}")
             return None
-    async def get_token_info(self, token_address: str, provider: Web3, chain_id: int, is_ether: bool) -> Dict[str, Any]:
+async def get_token_info(self, token_address: str, provider: Web3, chain_id: int, is_ether: bool) -> Dict[str, Any]:
         """Get token information"""
         chain_config = CHAIN_CONFIGS.get(chain_id, {})
        
@@ -2198,7 +2209,7 @@ def calculate_current_stage(stage_points: Dict[str, int], requirements: Dict[str
         except Exception as e:
             print(f"Error fetching token info for {token_address}: {str(e)}")
             return {"symbol": "TOKEN", "decimals": 18}
-    async def get_all_faucets_from_network(self, network: Dict) -> List[Dict]:
+async def get_all_faucets_from_network(self, network: Dict) -> List[Dict]:
         """Fetch all faucets from a single network"""
         try:
             print(f"🔄 Fetching faucets from {network['name']}...")
@@ -2264,7 +2275,7 @@ def calculate_current_stage(stage_points: Dict[str, int], requirements: Dict[str
         except Exception as e:
             print(f"❌ Error fetching faucets from {network['name']}: {str(e)}")
             return []
-    async def get_all_transactions_from_network(self, network: Dict) -> List[Dict]:
+async def get_all_transactions_from_network(self, network: Dict) -> List[Dict]:
         """Fetch all transactions from a single network"""
         try:
             print(f"🔄 Fetching transactions from {network['name']}...")
@@ -2337,7 +2348,7 @@ def calculate_current_stage(stage_points: Dict[str, int], requirements: Dict[str
         except Exception as e:
             print(f"❌ Error fetching transactions from {network['name']}: {str(e)}")
             return []
-    def get_quest_data(faucet_address: str):
+def get_quest_data(faucet_address: str):
         """
         In a real app, you fetch this from a 'quests' table.
         For now, we return the hardcoded structure you used in the frontend,
@@ -2369,7 +2380,7 @@ def calculate_new_stage(current_points: Dict[str, int], requirements: Dict[str, 
             break
     return current_stage
 
-    def process_faucets_for_chart(self, faucets_data: List[Dict]) -> List[Dict]:
+def process_faucets_for_chart(self, faucets_data: List[Dict]) -> List[Dict]:
         """Process faucets data for chart display"""
         try:
             network_counts = {}
@@ -2393,7 +2404,7 @@ def calculate_new_stage(current_points: Dict[str, int], requirements: Dict[str, 
         except Exception as e:
             print(f"Error processing faucets for chart: {str(e)}")
             return []
-    def process_users_for_chart(self, claims_data: List[Dict]) -> Dict[str, Any]:
+def process_users_for_chart(self, claims_data: List[Dict]) -> Dict[str, Any]:
         """Process users data for chart display with additional projected users"""
         try:
             unique_users = set()
@@ -2502,7 +2513,7 @@ def calculate_new_stage(current_points: Dict[str, int], requirements: Dict[str, 
                 "projectionPeriod": "none"
             }
            
-    def process_claims_for_chart(self, claims_data: List[Dict], faucet_names: Dict[str, str] = None) -> Dict[str, Any]:
+def process_claims_for_chart(self, claims_data: List[Dict], faucet_names: Dict[str, str] = None) -> Dict[str, Any]:
         """Process claims data for chart display"""
         try:
             if faucet_names is None:
@@ -2611,7 +2622,7 @@ def calculate_new_stage(current_points: Dict[str, int], requirements: Dict[str, 
         except Exception as e:
             print(f"Error processing claims for chart: {str(e)}")
             return {"chartData": [], "faucetRankings": [], "totalClaims": 0, "totalFaucets": 0}
-    def process_transactions_for_chart(self, transactions_data: List[Dict]) -> Dict[str, Any]:
+def process_transactions_for_chart(self, transactions_data: List[Dict]) -> Dict[str, Any]:
         """Process transactions data for chart display"""
         try:
             network_stats = {}
@@ -2662,7 +2673,7 @@ def calculate_new_stage(current_points: Dict[str, int], requirements: Dict[str, 
         except Exception as e:
             print(f"Error processing transactions for chart: {str(e)}")
             return {"networkStats": [], "totalTransactions": 0}
-    async def fetch_faucet_names(self, faucets_data: List[Dict]) -> Dict[str, str]:
+async def fetch_faucet_names(self, faucets_data: List[Dict]) -> Dict[str, str]:
         """Fetch faucet names for addresses"""
         try:
             faucet_names = {}
@@ -2679,7 +2690,7 @@ def calculate_new_stage(current_points: Dict[str, int], requirements: Dict[str, 
         except Exception as e:
             print(f"Error fetching faucet names: {str(e)}")
             return {}
-    async def update_all_analytics_data(self) -> Dict[str, Any]:
+async def update_all_analytics_data(self) -> Dict[str, Any]:
         """Update all analytics data from blockchain sources"""
         if self.is_updating:
             return {"success": False, "message": "Update already in progress"}
@@ -4986,7 +4997,7 @@ async def save_quest(request: Quest):
             "end_date": quest_data.pop("endDate"),
             "reward_token_type": quest_data.pop("rewardTokenType"),
             "token_address": quest_data.pop("tokenAddress"),
-            
+            "token_symbol": quest_data.pop("tokenSymbol", None),
             # New/Updated fields:
             "image_url": quest_data.pop("imageUrl"), 
             "stage_pass_requirements": stage_reqs_to_store, # Stored as JSON/Dict
@@ -5086,6 +5097,7 @@ async def get_quest_by_address(faucetAddress: str):
             "startDate": start_date,
             "endDate": end_date,
             "tasks": tasks,
+            "tokenSymbol": quest_row.get("token_symbol"),
             "imageUrl": quest_row.get("image_url"),
             "stagePassRequirements": stage_reqs,
             "distributionConfig": quest_row.get("distribution_config"),
@@ -5398,6 +5410,7 @@ async def finalize_quest(finalize: QuestFinalize):
             "distribution_config": draft_data.get("distribution_config"),
             "start_date": finalize.startDate,
             "end_date": finalize.endDate,
+            "token_symbol": draft_data.get("token_symbol"),
             "claim_window_hours": finalize.claimWindowHours,
             "stage_pass_requirements": finalize.stagePassRequirements.dict(),
             "is_draft": False,
@@ -5444,7 +5457,9 @@ async def get_user_drafts(creator_address: str):
         return {"success": True, "drafts": response.data or []}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
+def generate_unique_referral_id():
+    """Generates a short, URL-friendly unique ID."""
+    return shortuuid.ShortUUID().random(length=8)   
 # This is the endpoint the WalletConnectButton calls
 @app.get("/api/profile/{wallet_address}")
 async def get_user_profile_data(wallet_address: str):
@@ -5473,6 +5488,179 @@ async def get_user_profile_data(wallet_address: str):
         print(f"Error in wallet profile fetch: {e}")
         raise HTTPException(status_code=500, detail="Database error")
 
+@app.post("/api/quests/{faucet_address}/join", tags=["Quest Actions"])
+async def join_quest(faucet_address: str, payload: JoinQuestRequest):
+    """
+    Registers a user for a quest. 
+    - Generates a unique referral ID for the new user.
+    - If a valid 'referralCode' is provided, awards 10 points to the referrer.
+    """
+    try:
+        # 1. Input Sanitization
+        if not Web3.is_address(faucet_address) or not Web3.is_address(payload.walletAddress):
+            raise HTTPException(status_code=400, detail="Invalid address format")
+            
+        faucet_address_cs = Web3.to_checksum_address(faucet_address)
+        user_address_cs = Web3.to_checksum_address(payload.walletAddress)
+
+        # 2. Check if user already exists
+        existing_user = supabase.table("quest_participants")\
+            .select("referral_id")\
+            .eq("quest_address", faucet_address_cs)\
+            .eq("wallet_address", user_address_cs)\
+            .execute()
+
+        if existing_user.data:
+            return {
+                "success": True, 
+                "message": "User already joined", 
+                "referralId": existing_user.data[0]['referral_id']
+            }
+
+        # 3. Handle Referral Logic (If user was invited)
+        if payload.referralCode:
+            # Find the referrer (must be in the SAME quest)
+            referrer_res = supabase.table("quest_participants")\
+                .select("wallet_address, points, referral_count")\
+                .eq("quest_address", faucet_address_cs)\
+                .eq("referral_id", payload.referralCode)\
+                .execute()
+            
+            if referrer_res.data:
+                referrer = referrer_res.data[0]
+                new_points = (referrer.get('points') or 0) + 10
+                new_count = (referrer.get('referral_count') or 0) + 1
+                
+                # Update Referrer Points (+10)
+                supabase.table("quest_participants").update({
+                    "points": new_points,
+                    "referral_count": new_count
+                }).eq("quest_address", faucet_address_cs)\
+                  .eq("referral_id", payload.referralCode)\
+                  .execute()
+                  
+                print(f"✅ Awarded 10 pts to referrer: {referrer['wallet_address']}")
+
+        # 4. Generate Unique Referral ID (Collision Check)
+        new_ref_id = generate_unique_referral_id()
+        # Simple loop to ensure absolute uniqueness (rare but safe)
+        while True:
+            check_dup = supabase.table("quest_participants").select("id").eq("referral_id", new_ref_id).execute()
+            if not check_dup.data:
+                break
+            new_ref_id = generate_unique_referral_id()
+
+        # 5. Insert New Participant
+        new_participant = {
+            "quest_address": faucet_address_cs,
+            "wallet_address": user_address_cs,
+            "referral_id": new_ref_id,
+            "points": 0,
+            "referral_count": 0,
+            "joined_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        supabase.table("quest_participants").insert(new_participant).execute()
+
+        return {
+            "success": True, 
+            "message": "Successfully joined quest", 
+            "referralId": new_ref_id
+        }
+
+    except Exception as e:
+        print(f"❌ Error joining quest: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/quests/{faucet_address}/checkin", tags=["Quest Actions"])
+async def daily_checkin(faucet_address: str, payload: CheckInRequest):
+    """
+    Performs a daily check-in for the user.
+    - Checks 24h cooldown.
+    - Awards 10 points.
+    - Updates 'last_checkin_at'.
+    - Logs a submission record for 'sys_daily'.
+    """
+    try:
+        # 1. Input Sanitization
+        if not Web3.is_address(faucet_address) or not Web3.is_address(payload.walletAddress):
+            raise HTTPException(status_code=400, detail="Invalid address format")
+
+        faucet_address_cs = Web3.to_checksum_address(faucet_address)
+        user_address_cs = Web3.to_checksum_address(payload.walletAddress)
+
+        # 2. Fetch User Data
+        user_res = supabase.table("quest_participants")\
+            .select("*")\
+            .eq("quest_address", faucet_address_cs)\
+            .eq("wallet_address", user_address_cs)\
+            .execute()
+
+        if not user_res.data:
+            raise HTTPException(status_code=404, detail="User not registered in this quest.")
+
+        user = user_res.data[0]
+        last_checkin = user.get("last_checkin_at")
+        
+        # 3. Verify Cooldown (24 Hours)
+        now = datetime.now(timezone.utc)
+        
+        if last_checkin:
+            last_checkin_dt = datetime.fromisoformat(last_checkin.replace('Z', '+00:00'))
+            next_available = last_checkin_dt + timedelta(hours=24)
+            
+            if now < next_available:
+                # Calculate remaining time for nice error message
+                remaining = next_available - now
+                hours, remainder = divmod(remaining.seconds, 3600)
+                minutes, _ = divmod(remainder, 60)
+                return {
+                    "success": False, 
+                    "message": f"Cooldown active. Try again in {hours}h {minutes}m."
+                }
+
+        # 4. Award Points & Update Timestamp
+        new_points = (user.get("points") or 0) + 10
+        
+        supabase.table("quest_participants").update({
+            "points": new_points,
+            "last_checkin_at": now.isoformat()
+        }).eq("quest_address", faucet_address_cs)\
+          .eq("wallet_address", user_address_cs)\
+          .execute()
+
+        # 5. Log Submission (So it shows as 'Completed' in the UI task list)
+        # We upsert using a composite key logic or just insert. 
+        # Ideally, you have a unique constraint on (wallet, quest, task_id) for one-time tasks, 
+        # but daily tasks might need a 'last_completed' field in submissions or just rely on participant table.
+        # Here we just log it for history.
+        
+        submission_entry = {
+            "faucet_address": faucet_address_cs,
+            "wallet_address": user_address_cs,
+            "task_id": "sys_daily",
+            "status": "approved",
+            "submitted_data": "Daily Check-in",
+            "submission_date": now.isoformat()
+        }
+        
+        # We upsert to ensure we don't clog DB if they somehow spam, 
+        # though logic above prevents spam.
+        # Note: You might want to generate a unique ID for this specific day's submission 
+        # if you want a history log, otherwise upserting by task_id keeps the table clean.
+        supabase.table("submissions").upsert(submission_entry).execute()
+
+        return {
+            "success": True, 
+            "message": "Daily check-in successful! +10 Points",
+            "newPoints": new_points
+        }
+
+    except Exception as e:
+        print(f"❌ Error during check-in: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/profile/update")
 async def update_user_profile(request: UserProfileUpdate):
     """Update user details with signature verification."""
@@ -5494,6 +5682,7 @@ async def update_user_profile(request: UserProfileUpdate):
             "telegram_handle": request.telegram_handle,   # NEW
             "farcaster_handle": request.farcaster_handle, # NEW
             "avatar_url": request.avatar_url,
+            
             "updated_at": datetime.now().isoformat()
         }
 
