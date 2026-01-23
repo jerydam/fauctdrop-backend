@@ -4187,19 +4187,35 @@ async def check_quest_name_availability(name: str):
         return {"exists": False, "valid": True, "error": str(e)}
 
 @app.get("/api/profile/user/{identifier}")
-async def get_profile_by_username_or_address(identifier: str):
-    # 1. Try searching by Username
-    response = supabase.table("user_profiles").select("*").ilike("username", identifier).execute()
-    
-    # 2. If not found, try searching by Wallet Address
-    if not response.data:
-        response = supabase.table("user_profiles").select("*").eq("wallet_address", identifier.lower()).execute()
+async def get_user_profile(identifier: str):
+    """
+    Smart endpoint: Search by Username OR Wallet Address.
+    """
+    try:
+        # 1. Try searching by Wallet Address first (Exact Match)
+        # We assume identifiers starting with '0x' are wallets
+        if identifier.startswith("0x") and len(identifier) == 42:
+            response = supabase.table("user_profiles")\
+                .select("*")\
+                .eq("wallet_address", identifier.lower())\
+                .execute()
+        else:
+            # 2. Otherwise, treat as Username (Case Insensitive)
+            response = supabase.table("user_profiles")\
+                .select("*")\
+                .ilike("username", identifier)\
+                .execute()
         
-    if not response.data:
-        raise HTTPException(status_code=404, detail="User not found")
+        if not response.data:
+            raise HTTPException(status_code=404, detail="User not found")
             
-    return {"success": True, "profile": response.data[0]}
-
+        return {"success": True, "profile": response.data[0]}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
 @app.get("/api/profile/user/{username}")
 async def get_profile_by_username(username: str):
     """
@@ -4224,24 +4240,36 @@ async def get_profile_by_username(username: str):
 
 @app.post("/api/profile/update")
 async def update_user_profile(request: UserProfileUpdate):
-    """
-    Updates or creates a user profile. 
-    Verifies that the request is signed by the wallet owner.
-    """
     try:
         # 1. Standardize the address
         wallet_address = Web3.to_checksum_address(request.wallet_address)
+        wallet_lower = wallet_address.lower()
         
         # 2. Security: Verify the signature
-        # This prevents anyone from updating someone else's profile by just knowing their address
         if not verify_signature(wallet_address, request.message, request.signature):
-            raise HTTPException(status_code=401, detail="Invalid signature. Ownership verification failed.")
+            raise HTTPException(status_code=401, detail="Invalid signature")
 
-        # 3. Prepare the data for Supabase
-        # We use snake_case to match standard PostgreSQL/Supabase column naming
+        # =========================================================
+        # 3. CRITICAL FIX: Username Availability Check
+        # =========================================================
+        
+        # Check if ANY row has this username
+        existing = supabase.table("user_profiles")\
+            .select("wallet_address")\
+            .ilike("username", request.username)\
+            .execute()
+
+        if existing.data:
+            owner_wallet = existing.data[0]['wallet_address']
+            
+            # If the username exists AND belongs to a DIFFERENT wallet, block it.
+            if owner_wallet.lower() != wallet_lower:
+                raise HTTPException(status_code=400, detail="Username is already taken by another user.")
+
+        # 4. Prepare data
         profile_data = {
-            "wallet_address": wallet_address.lower(), # Store as lowercase for easier lookup
-            "username": request.username,
+            "wallet_address": wallet_lower,
+            "username": request.username, # Now we know this is safe
             "email": request.email,
             "bio": request.bio,
             "twitter_handle": request.twitter_handle,
@@ -4252,14 +4280,14 @@ async def update_user_profile(request: UserProfileUpdate):
             "updated_at": datetime.now().isoformat()
         }
 
-        # 4. Upsert into Supabase 'user_profiles' table
+        # 5. Upsert
         response = supabase.table("user_profiles").upsert(
             profile_data, 
             on_conflict="wallet_address"
         ).execute()
         
         if not response.data:
-            raise HTTPException(status_code=500, detail="Failed to save profile to database")
+            raise HTTPException(status_code=500, detail="Database save failed")
             
         return {
             "success": True, 
@@ -4270,9 +4298,9 @@ async def update_user_profile(request: UserProfileUpdate):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"💥 Profile Update Error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error during profile update")
-
+        print(f"💥 Update Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+    
 @app.post("/faucet-x-template")
 async def save_faucet_x_template(request: CustomXPostTemplate):
     """Save custom X post template for a faucet"""
