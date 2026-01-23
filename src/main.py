@@ -4245,31 +4245,44 @@ async def update_user_profile(request: UserProfileUpdate):
         wallet_address = Web3.to_checksum_address(request.wallet_address)
         wallet_lower = wallet_address.lower()
         
-        # 2. Security: Verify the signature
+        # 2. Security: Verify signature
         if not verify_signature(wallet_address, request.message, request.signature):
             raise HTTPException(status_code=401, detail="Invalid signature")
 
         # =========================================================
-        # 3. CRITICAL FIX: Username Availability Check
+        # 3. CRITICAL FIX: Check All Unique Fields (Username, Email, Twitter)
         # =========================================================
         
-        # Check if ANY row has this username
-        existing = supabase.table("user_profiles")\
-            .select("wallet_address")\
-            .ilike("username", request.username)\
-            .execute()
-
-        if existing.data:
-            owner_wallet = existing.data[0]['wallet_address']
+        # A helper function to check availability
+        def check_is_taken(column, value):
+            if not value: return False # Skip empty fields
             
-            # If the username exists AND belongs to a DIFFERENT wallet, block it.
-            if owner_wallet.lower() != wallet_lower:
-                raise HTTPException(status_code=400, detail="Username is already taken by another user.")
+            # Find any row with this value
+            existing = supabase.table("user_profiles").select("wallet_address").eq(column, value).execute()
+            
+            if existing.data:
+                found_wallet = existing.data[0]['wallet_address']
+                # If the wallet found is NOT the current user, then it's taken
+                if found_wallet.lower() != wallet_lower:
+                    return True
+            return False
+
+        # Run the checks
+        if check_is_taken("username", request.username):
+            raise HTTPException(status_code=400, detail="Username is already taken.")
+            
+        if check_is_taken("email", request.email):
+            raise HTTPException(status_code=400, detail="Email is already used by another account.")
+
+        if check_is_taken("twitter_handle", request.twitter_handle):
+            raise HTTPException(status_code=400, detail="Twitter handle is already linked to another account.")
+
+        # =========================================================
 
         # 4. Prepare data
         profile_data = {
             "wallet_address": wallet_lower,
-            "username": request.username, # Now we know this is safe
+            "username": request.username, 
             "email": request.email,
             "bio": request.bio,
             "twitter_handle": request.twitter_handle,
@@ -4286,9 +4299,6 @@ async def update_user_profile(request: UserProfileUpdate):
             on_conflict="wallet_address"
         ).execute()
         
-        if not response.data:
-            raise HTTPException(status_code=500, detail="Database save failed")
-            
         return {
             "success": True, 
             "message": "Profile updated successfully", 
