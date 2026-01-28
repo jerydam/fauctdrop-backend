@@ -1,17 +1,20 @@
 from __future__ import annotations
 import shortuuid
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
+from fastapi import FastAPI, HTTPException, Request, Form, File, UploadFile, Depends, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import UploadFile, File, Depends
 from pydantic import BaseModel, Field, ConfigDict
 from web3 import Web3
-from typing import Optional
+from fastapi.responses import RedirectResponse, JSONResponse
+from typing import List, Optional, Literal, Dict, Any, Tuple
 from typing import Union
 from datetime import datetime, timedelta, timezone
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 # FIX: Use Web3's constants for ADDRESS_ZERO
 from web3.constants import ADDRESS_ZERO as ZeroAddress
-from typing import Dict, Tuple, List, Optional, Any
+from web3.middleware import ExtraDataToPOAMiddleware
+from enum import Enum
+from alchemy import Alchemy, Network
 from eth_account import Account
 from web3.types import TxReceipt
 from web3.exceptions import ContractLogicError
@@ -31,9 +34,10 @@ from sqlalchemy import select, func, distinct, text # Needed for DB interaction
 from sqlalchemy import Column, TEXT, BOOLEAN, DATE, TIMESTAMP, text # Import required DB elements
 from sqlalchemy.ext.declarative import declarative_base # Import the base for ORM models
 from eth_account.messages import encode_defunct
-# ... other imports ...
+import httpx
 import traceback # Added for better error logging
 import logging
+from dotenv import load_dotenv
 # Add parent directory to sys.path for config import
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Assuming 'config.py' exists and contains PRIVATE_KEY and get_rpc_url
@@ -67,6 +71,77 @@ from decimal import Decimal
 import uuid
 import logging
 import traceback # Added for better error logging
+
+
+from authlib.integrations.starlette_client import OAuth
+from starlette.config import Config
+
+config = Config(environ=os.environ)
+oauth = OAuth(config)
+
+oauth.register(
+    name='discord',
+    client_id=config("DISCORD_CLIENT_ID"),
+    client_secret=config("DISCORD_CLIENT_SECRET"),
+    authorize_url='https://discord.com/api/oauth2/authorize',
+    access_token_url='https://discord.com/api/oauth2/token',
+    api_base_url='https://discord.com/api/',
+    client_kwargs={'scope': 'identify guilds guilds.members.read'}
+)
+
+async def get_discord_user(access_token: str) -> dict:
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            "https://discord.com/api/users/@me",
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+async def verify_membership_in_guild(access_token: str, guild_id: str):
+    url = f"https://discord.com/api/users/@me/guilds/{guild_id}/member"
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
+        if resp.status_code == 200:
+            return True, resp.json(), "Member"
+        elif resp.status_code == 404:
+            return False, None, "Not member"
+        else:
+            return False, None, f"Error {resp.status_code}"
+        
+
+auth_router = APIRouter(prefix="/auth", tags=["auth"])
+
+@auth_router.get("/discord")
+async def discord_login(request: Request):
+    redirect_uri = str(request.url_for("discord_callback"))
+    state = json.dumps({"return_to": "/quest"})  # Add quest_id later if needed
+    return await oauth.discord.authorize_redirect(request, redirect_uri, state=state)
+
+@auth_router.get("/discord/callback", name="discord_callback")
+async def discord_callback(request: Request):
+    try:
+        token = await oauth.discord.authorize_access_token(request)
+        access_token = token["access_token"]
+        user = await get_discord_user(access_token)
+        discord_id = user["id"]
+
+        state_str = request.query_params.get("state")
+        state_data = json.loads(state_str) if state_str else {}
+        return_to = state_data.get("return_to", "/quest")
+
+        # Example: check membership in a guild (guild_id from state or hardcoded)
+        # is_member, member_data, msg = await verify_membership_in_guild(access_token, "YOUR_GUILD_ID")
+
+        return RedirectResponse(
+            url=f"https://app.faucetdrop.io{return_to}?success=discord_linked&discord_id={discord_id}"
+        )
+    except Exception as e:
+        print(f"Discord callback error: {e}")
+        return RedirectResponse(url="https://app.faucetdrop.io/quest?error=discord_failed")
+
+
+
 app = FastAPI(title="FaucetDrops Backend API")
 # Configure CORS
 app.add_middleware(
@@ -76,6 +151,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS", "PUT", "DELETE"], # Added PUT/DELETE for task management
     allow_headers=["Content-Type"],
 )
+app.include_router(auth_router)
 # Validate environment variables
 if not PRIVATE_KEY or PRIVATE_KEY == "0x" + "0"*64:
     pass # Let initialization continue, but rely on function-level gas checks.
@@ -2577,7 +2653,264 @@ class AnalyticsDataManager:
    
     # --- HELPER FUNCTIONS FOR QUEST LOGIC ---
 
+load_dotenv()
+ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY")
+if not ALCHEMY_API_KEY:
+    raise ValueError("ALCHEMY_API_KEY not set in .env")
 
+class Chain(str, Enum):
+    ethereum = "ethereum"
+    base     = "base"
+    arbitrum = "arbitrum"
+    celo     = "celo"
+    lisk     = "lisk"
+
+CHAIN_RPC_URLS = {
+    Chain.ethereum: f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}",
+    Chain.base:     f"https://base-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}",
+    Chain.arbitrum: f"https://arb-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}",
+    Chain.celo:     f"https://celo-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}",
+    Chain.lisk:     f"https://lisk-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}",
+}
+
+alchemy_clients = {
+    Chain.ethereum: Alchemy(api_key=ALCHEMY_API_KEY, network=Network.ETH_MAINNET),
+    Chain.base:     Alchemy(api_key=ALCHEMY_API_KEY, network=Network.BASE_MAINNET),
+    Chain.arbitrum: Alchemy(api_key=ALCHEMY_API_KEY, network=Network.ARB_MAINNET),
+    Chain.celo:     Alchemy(api_key=ALCHEMY_API_KEY, network=Network.CELO_MAINNET),
+    # Lisk is a newer addition; if Network.LISK_MAINNET is missing, 
+    # check the debug step below.
+    Chain.lisk:     Alchemy(api_key=ALCHEMY_API_KEY, network=Network.LISK_MAINNET),
+}
+
+# 4. Update the Middleware logic
+def get_w3(chain: Chain) -> Web3:
+    url = CHAIN_RPC_URLS.get(chain)
+    if not url:
+        raise ValueError(f"No RPC for {chain}")
+    w3 = Web3(Web3.HTTPProvider(url))
+    
+    # All Layer 2s and sidechains (Base, Lisk, Polygon, Arb) 
+    # generally need the PoA middleware for Web3.py
+    if chain in [Chain.base, Chain.arbitrum, Chain.celo, Chain.lisk]:
+        w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+    return w3
+
+# ────────────────────────────────────────────────
+# Models
+# ────────────────────────────────────────────────
+class VerificationRule(BaseModel):
+    type: Literal[
+        "hold_balance", "hold_nft", "tx_count", "wallet_age_days",
+        "interact_contract", "swap_on_dex", "add_liquidity",
+        "claim_rewards", "provide_liquidity_duration"
+    ]
+    contract_address: Optional[str] = Field(None, description="Token/NFT/DEX/Staking/Pool CA")
+    min_amount: Optional[float] = None
+    min_tx_count: Optional[int] = None
+    min_days: Optional[int] = Field(30, ge=1)
+    min_duration_hours: Optional[int] = Field(24, ge=1)
+    pool_address: Optional[str] = None
+
+class VerificationRequest(BaseModel):
+    wallet: str = Field(..., pattern=r"^0x[a-fA-F0-9]{40}$")
+    chain: Chain
+    rules: List[VerificationRule]
+
+class VerificationResult(BaseModel):
+    passed: bool
+    details: str
+    proof: Optional[Dict[str, Any]] = None
+
+class BatchVerificationResponse(BaseModel):
+    wallet: str
+    chain: Chain
+    results: Dict[str, VerificationResult]
+
+# ────────────────────────────────────────────────
+# Shared ABIs
+# ────────────────────────────────────────────────
+ERC20_ABI = [{"constant":True,"inputs":[{"name":"_owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"","type":"uint256"}],"type":"function"}]
+ERC721_ABI = [{"constant":True,"inputs":[{"name":"owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"","type":"uint256"}],"type":"function"}]
+
+# Common event topics (keccak256("EventName(types)"))
+SWAP_TOPIC      = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"  # Uniswap V2/V3 Swap
+MINT_TOPIC      = "0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c7a3c4823"  # Mint(address,uint)
+TRANSFER_TOPIC  = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"  # Transfer
+REWARD_PAID_TOPIC = "0x9ca6db9048a274e9d6de6d2d20a9a2d1900408d5e0f3b7f686d4d8a0d6b0e1"  # RewardPaid common sig (adjust per contract)
+
+# ────────────────────────────────────────────────
+# Verifiers
+# ────────────────────────────────────────────────
+
+async def verify_hold_balance(wallet: str, chain: Chain, contract_address: str | None, min_amount: float, **_) -> Tuple[bool, str, Dict]:
+    w3 = get_w3(chain)
+    wallet_cs = Web3.to_checksum_address(wallet)
+
+    if not contract_address or contract_address.lower() == "native":
+        bal = w3.from_wei(w3.eth.get_balance(wallet_cs), "ether")
+        unit = "native"
+    else:
+        ca = Web3.to_checksum_address(contract_address)
+        contract = w3.eth.contract(ca, abi=ERC20_ABI)
+        bal_wei = contract.functions.balanceOf(wallet_cs).call()
+        bal = bal_wei / 10**18  # assume 18 decimals; production: fetch decimals()
+        unit = "token"
+
+    passed = bal >= min_amount
+    return passed, f"Balance: {bal:.6f} {unit}", {"balance": float(bal)}
+
+async def verify_hold_nft(wallet: str, chain: Chain, contract_address: str, **_) -> Tuple[bool, str, Dict]:
+    if not contract_address:
+        return False, "contract_address required for hold_nft", {}
+    w3 = get_w3(chain)
+    ca = Web3.to_checksum_address(contract_address)
+    wallet_cs = Web3.to_checksum_address(wallet)
+    contract = w3.eth.contract(ca, abi=ERC721_ABI)
+    bal = contract.functions.balanceOf(wallet_cs).call()
+    passed = bal > 0
+    return passed, f"NFT balance: {bal}", {"nft_balance": bal}
+
+async def verify_tx_count(wallet: str, chain: Chain, min_tx_count: int, **_) -> Tuple[bool, str, Dict]:
+    w3 = get_w3(chain)
+    count = w3.eth.get_transaction_count(Web3.to_checksum_address(wallet))
+    passed = count >= min_tx_count
+    return passed, f"Sent tx count: {count}", {"tx_count": count}
+
+async def verify_wallet_age_days(wallet: str, chain: Chain, min_days: int, **_) -> Tuple[bool, str, Dict]:
+    client = alchemy_clients.get(chain)
+    if not client:
+        return False, f"No Alchemy for {chain}", {}
+
+    oldest_ts = None
+    page_key = None
+    while True:
+        res = client.core.get_asset_transfers(
+            from_block="0x0",
+            to_block="latest",
+            from_address=wallet,
+            category=["external","internal","erc20","erc721","erc1155"],
+            max_count="0x3e8",
+            page_key=page_key
+        )
+        transfers = res["transfers"]
+        if transfers:
+            oldest = min(transfers, key=lambda x: int(x["blockNum"], 16))
+            ts = datetime.fromisoformat(oldest["metadata"]["blockTimestamp"].replace("Z", "+00:00"))
+            if oldest_ts is None or ts < oldest_ts:
+                oldest_ts = ts
+        page_key = res.get("pageKey")
+        if not page_key: break
+
+    if not oldest_ts:
+        return False, "No tx history", {}
+    age_days = (datetime.now(timezone.utc) - oldest_ts).days
+    passed = age_days >= min_days
+    return passed, f"Age: {age_days} days", {"age_days": age_days, "first_ts": oldest_ts.isoformat()}
+
+async def verify_interact_contract(wallet: str, chain: Chain, contract_address: str, **_) -> Tuple[bool, str, Dict]:
+    client = alchemy_clients.get(chain)
+    if not client or not contract_address:
+        return False, "Missing client or contract_address", {}
+
+    res = client.core.get_asset_transfers(
+        from_block="0x0",
+        to_block="latest",
+        to_address=contract_address,
+        from_address=wallet,
+        category=["external"],
+        max_count="0x1"  # just need existence
+    )
+    passed = len(res["transfers"]) > 0
+    proof = {"tx_example": res["transfers"][0]["hash"] if passed else None}
+    return passed, "Interacted" if passed else "No interaction", proof
+
+async def verify_swap_on_dex(wallet: str, chain: Chain, contract_address: str | None, **_) -> Tuple[bool, str, Dict]:
+    # contract_address = DEX Router or Pair; here assume router/pair
+    if not contract_address:
+        return False, "contract_address (router/pair) required", {}
+    client = alchemy_clients.get(chain)
+    if not client:
+        return False, "No Alchemy client", {}
+
+    # Simple: check if any Swap event with from == wallet
+    from_block = "0x0"  # heavy; production: limit range or use subgraph
+    logs = client.core.get_logs(
+        from_block=from_block,
+        to_block="latest",
+        address=Web3.to_checksum_address(contract_address),
+        topics=[[SWAP_TOPIC], [Web3.to_bytes(hexstr=wallet).rjust(32, b'\0').hex()]]
+    )
+    passed = len(logs) > 0
+    return passed, f"Swaps found: {len(logs)}", {"swap_count": len(logs)}
+
+async def verify_add_liquidity(wallet: str, chain: Chain, pool_address: str | None, contract_address: str | None, **_) -> Tuple[bool, str, Dict]:
+    # pool_address = LP pair; contract_address fallback to pool
+    target = pool_address or contract_address
+    if not target:
+        return False, "pool_address or contract_address required", {}
+    client = alchemy_clients.get(chain)
+    if not client:
+        return False, "No Alchemy", {}
+
+    # Look for Mint event to wallet or Transfer LP token to wallet
+    logs = client.core.get_logs(
+        from_block="0x0",
+        to_block="latest",
+        address=Web3.to_checksum_address(target),
+        topics=[[MINT_TOPIC], None, [Web3.to_bytes(hexstr=wallet).rjust(32, b'\0').hex()]]
+    )
+    passed = len(logs) > 0
+    return passed, f"LP adds found: {len(logs)}", {"add_count": len(logs)}
+
+async def verify_claim_rewards(wallet: str, chain: Chain, contract_address: str, **_) -> Tuple[bool, str, Dict]:
+    if not contract_address:
+        return False, "Staking contract_address required", {}
+    client = alchemy_clients.get(chain)
+    if not client:
+        return False, "No Alchemy", {}
+
+    logs = client.core.get_logs(
+        from_block="0x0",
+        to_block="latest",
+        address=Web3.to_checksum_address(contract_address),
+        topics=[[REWARD_PAID_TOPIC], [Web3.to_bytes(hexstr=wallet).rjust(32, b'\0').hex()]]
+    )
+    passed = len(logs) > 0
+    return passed, f"Claims found: {len(logs)}", {"claim_count": len(logs)}
+
+async def verify_provide_liquidity_duration(wallet: str, chain: Chain, pool_address: str, min_duration_hours: int, **_) -> Tuple[bool, str, Dict]:
+    # FULL IMPL REQUIRES DB + cron to snapshot LP balance over time
+    # Here: simple current hold check + note
+    if not pool_address:
+        return False, "pool_address (LP token) required", {}
+
+    w3 = get_w3(chain)
+    wallet_cs = Web3.to_checksum_address(wallet)
+    lp_ca = Web3.to_checksum_address(pool_address)
+    contract = w3.eth.contract(lp_ca, abi=ERC20_ABI)
+    bal = contract.functions.balanceOf(wallet_cs).call() / 10**18
+
+    # TODO: Check DB for snapshot from min_duration_hours ago
+    # If bal was >0 then and still >0 now → pass
+    passed = bal > 0  # placeholder
+    details = f"Current LP balance: {bal:.4f} — duration check requires persistence layer"
+    return passed, details, {"current_lp": float(bal), "note": "Implement snapshot DB for real duration check"}
+
+# ────────────────────────────────────────────────
+# Mapper
+# ────────────────────────────────────────────────
+VERIFIER_MAP = {
+    "hold_balance":             verify_hold_balance,
+    "hold_nft":                 verify_hold_nft,
+    "tx_count":                 verify_tx_count,
+    "wallet_age_days":          verify_wallet_age_days,
+    "interact_contract":        verify_interact_contract,
+    "swap_on_dex":              verify_swap_on_dex,
+    "add_liquidity":            verify_add_liquidity,
+    "claim_rewards":            verify_claim_rewards,
+    "provide_liquidity_duration": verify_provide_liquidity_duration,
+}
 async def get_quest_context(faucet_address: str):
     """
     Fetches the Stage Requirements and Task List from the DB to verify points and stages.
@@ -6685,6 +7018,18 @@ async def claim_no_code(request: ClaimNoCodeRequest):
         print(f"Server error for user {request.userAddress}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     
+@app.post("/admin/verify-task")
+async def admin_verify_task(submission_id: str, action: str): # action = "approve" or "reject"
+    if action == "approve":
+        # 1. Update task_completions status to 'verified'
+        # 2. Trigger the point addition logic to the user's total profile
+        supabase.table("task_completions").update({"status": "verified"}).eq("id", submission_id).execute()
+        return {"status": "success", "message": "Points awarded"}
+    else:
+        # Mark as rejected so the user can try again
+        supabase.table("task_completions").update({"status": "rejected"}).eq("id", submission_id).execute()
+        return {"status": "rejected", "message": "Proof denied"}
+        
 @app.post("/api/bot/verify-social")
 async def bot_verify_social(request: BotVerifyRequest):
     engine = SocialVerificationEngine(headless=True)
