@@ -10,3 +10,4 @@ httpx==0.28.1
 eth-account==0.13.7
 playwright==1.49.1
 pytest-playwright==0.6.2
+shortuuid==1.0.13
