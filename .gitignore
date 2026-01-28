@@ -7,6 +7,7 @@ __pycache__/
 .Python
 env/
 build/
+twittter_auth.json
 develop-eggs/
 dist/
 downloads/
@@ -26,6 +27,8 @@ venv/
 myenv/
 ENV/
 env/
+temp_browser_profile/
+bot_browser_data/
 
 # IDEs and editors
 .idea/
@@ -33,3 +36,31 @@ env/
 *.swp
 *.swo
 *~
+# --- Authentication & Sessions (CRITICAL) ---
+bot_browser_data/
+src/bot_browser_data/
+temp_browser_profile/
+twitter_auth.json
+*.auth/
+
+# --- Environment & Secrets ---
+.env
+venv/
+env/
+.venv/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# --- IDEs & OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Logs & Debugging ---
+*.log
+debug_fail_*.png
