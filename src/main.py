@@ -1997,6 +1997,9 @@ class SocialVerificationEngine:
                     return await self._verify_like(page, base_url, clean_handle)
                 elif task_type == "comment":
                     return await self._verify_comment(page, base_url, tweet_id, clean_handle)
+                # ADD THIS:
+                elif task_type == "quote":
+                    return await self._verify_quote(page, proof_url, clean_handle)
                 
                 return False
 
@@ -2334,7 +2337,50 @@ class SocialVerificationEngine:
         except Exception as e:
             print(f"❌ Like verification error: {str(e)}")
             return False
+
+    async def _verify_quote(self, page, proof_url, clean_handle):
+        """Verify if user quoted the tweet with the correct mentions"""
+        print(f"🤖 Checking Quote Tweet for @{clean_handle}")
         
+        try:
+            # 1. Navigate to the user's submitted proof URL
+            await page.goto(proof_url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(5000)
+
+            # 2. Verify the tweet belongs to the participant
+            # We check if the URL contains their handle or if the page shows their profile
+            if clean_handle not in proof_url.lower():
+                print(f"⚠️ Warning: Submission URL handle does not match participant handle")
+
+            # 3. Locate the main tweet on this page
+            main_tweet = page.locator('article[data-testid="tweet"]').first
+            if await main_tweet.is_visible():
+                tweet_text = await main_tweet.inner_text()
+                tweet_html = await main_tweet.inner_html()
+                
+                # 4. Check for the required mentions (@faucetdrops or custom tag)
+                # We check the text for the mention and the HTML for the link to the profile
+                has_mention = (
+                    "@faucetdrops" in tweet_text.lower() or 
+                    "faucetdrops" in tweet_html.lower()
+                )
+
+                # 5. Check if it's actually a quote (contains the embedded original tweet)
+                # Twitter embeds the quoted tweet in a specific div/card
+                is_quote = await main_tweet.locator('div[role="link"]').count() > 0
+
+                if has_mention and is_quote:
+                    print(f"✅ Quote verified for @{clean_handle} with mentions!")
+                    await page.screenshot(path=f"debug_quote_success_{clean_handle}.png")
+                    return True
+                else:
+                    print(f"❌ Quote check failed. Mention: {has_mention}, IsQuote: {is_quote}")
+            
+            return False
+
+        except Exception as e:
+            print(f"❌ Quote verification error: {str(e)}")
+            return False   
 class QuestFinalize(BaseModel):
     faucetAddress: str 
     draftId: Optional[str] = None
@@ -7035,6 +7081,8 @@ async def bot_verify_social(request: BotVerifyRequest):
     engine = SocialVerificationEngine(headless=True)
     
     try:
+        # Note: For 'quote', the proofUrl should be the link the user submitted, 
+        # not the original quest tweet.
         is_verified = await engine.verify_twitter(
             task_type=request.taskType,
             proof_url=request.proofUrl,
@@ -7042,17 +7090,13 @@ async def bot_verify_social(request: BotVerifyRequest):
         )
 
         if is_verified:
-            # Task passed: Approve and grant points
             await process_auto_approval(request.submissionId, request.faucetAddress, request.walletAddress)
             return {"verified": True, "message": "Verification successful!"}
-        
         else:
-            # Task failed: DELETE the submission so it doesn't stay in 'Reviewing'
             supabase.table("submissions").delete().eq("submission_id", request.submissionId).execute()
-            return {"verified": False, "message": "Bot could not find your interaction. Please try again."}
+            return {"verified": False, "message": "Verification failed. Ensure you quoted with @faucetdrops."}
             
     except Exception as e:
-        # Cleanup if the bot crashes to avoid stuck 'Reviewing' states
         supabase.table("submissions").delete().eq("submission_id", request.submissionId).execute()
         raise HTTPException(status_code=500, detail=str(e))
     
