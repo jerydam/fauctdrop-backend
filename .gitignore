@@ -25,4 +25,4 @@ Thumbs.db
 
 # --- Logs & Debugging ---
 *.log
-debug_fail_*.png
+debug_fail_*.pngsrc/twitter_auth.json
