@@ -1899,7 +1899,7 @@ class BotVerifyRequest(BaseModel):
 import os
 import asyncio
 from playwright.async_api import async_playwright
-from playwright_stealth import Stealth
+from playwright_stealth import stealth_async
 
 class SocialVerificationEngine:
     def __init__(self, headless=True):
@@ -1924,9 +1924,11 @@ class SocialVerificationEngine:
             ],
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
-        await self.stealth_config.apply_stealth_async(context)
+        
+        # APPLY STEALTH TO THE CONTEXT HERE
+        await stealth_async(context) 
+        
         return context
-
     async def _check_if_logged_in(self, page):
         """Check if the bot is logged into Twitter"""
         try:
