@@ -2721,12 +2721,16 @@ CHAIN_RPC_URLS = {
 alchemy_clients = {
     Chain.ethereum: Alchemy(api_key=ALCHEMY_API_KEY, network=Network.ETH_MAINNET),
     Chain.base:     Alchemy(api_key=ALCHEMY_API_KEY, network=Network.BASE),
-    Chain.celo:     Alchemy(api_key=ALCHEMY_API_KEY, network=Network.CELO), 
     Chain.arbitrum: Alchemy(api_key=ALCHEMY_API_KEY, network=Network.ARB_MAINNET),
-    # Lisk is a newer addition; if Network.LISK_MAINNET is missing, 
-    # check the debug step below.
-    Chain.lisk:     Alchemy(api_key=ALCHEMY_API_KEY, network=Network.LISK),
+    Chain.celo:     Alchemy(api_key=ALCHEMY_API_KEY, network=Network.CELO),
 }
+
+# Try to add Lisk support if available
+try:
+    alchemy_clients[Chain.lisk] = Alchemy(api_key=ALCHEMY_API_KEY, network=Network.LISK)
+except AttributeError:
+    print("⚠️ Lisk not supported in this Alchemy SDK version")
+   
 
 # 4. Update the Middleware logic
 def get_w3(chain: Chain) -> Web3:
