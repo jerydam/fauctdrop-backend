@@ -19,6 +19,7 @@ from eth_account import Account
 from web3.types import TxReceipt
 from web3.exceptions import ContractLogicError
 import sys
+import shutil
 import os
 import asyncio
 import secrets
@@ -1909,26 +1910,53 @@ class SocialVerificationEngine:
         if not os.path.exists(self.user_data_dir):
             os.makedirs(self.user_data_dir)
             print(f"📁 Created missing bot session directory: {self.user_data_dir}")
-            
+
+   
     async def _setup_browser(self, p):
+        # Instead of raising an exception, create the directory automatically.
+        # On Render Free, this folder is wiped on every restart.
         if not os.path.exists(self.user_data_dir):
-            raise Exception(f"Bot session folder missing at {self.user_data_dir}")
-            
+            os.makedirs(self.user_data_dir, exist_ok=True)
+            print(f"📁 Created browser session directory at {self.user_data_dir}")
+                
         context = await p.chromium.launch_persistent_context(
             user_data_dir=self.user_data_dir,
-            headless=self.headless,
+            headless=True,  
             ignore_default_args=["--enable-automation"],
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",     # CRITICAL: Prevents crash in Docker
+                "--disable-gpu",               # Saves significant RAM
+                "--disable-extensions",        # Saves RAM
+                "--no-zygote",                 # Reduces background processes
+                "--single-process",            # Forces Chromium into one process (RAM saver)
                 "--disable-web-security",
-                "--disable-features=IsolateOrigins,site-per-process"
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--window-size=1280,720",      # Fixed window size saves memory
             ],
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
+        
+        # Apply stealth to all pages in the context
         await playwright_stealth.stealth_async(context)
         return context
-    
+
+    def clear_browser_cache(self):
+        """
+        Clears the browser data folder to save disk space.
+        Run this periodically or if the folder exceeds a certain size.
+        """
+        if os.path.exists(self.user_data_dir):
+            try:
+                # We remove the directory and recreate it to wipe everything
+                shutil.rmtree(self.user_data_dir)
+                os.makedirs(self.user_data_dir, exist_ok=True)
+                print("🧹 Disk Cleanup: Browser cache cleared.")
+            except Exception as e:
+                print(f"⚠️ Cleanup failed: {e}")
+
     async def _check_if_logged_in(self, page):
         """Check if the bot is logged into Twitter"""
         try:
@@ -4145,7 +4173,12 @@ async def wait_for_transaction_receipt(w3: Web3, tx_hash: str, timeout: int = 30
 # Basic health check
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+    # Using timezone-aware UTC is the current best practice
+    return {
+        "status": "ok", 
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
 @app.get("/chain-info/{chain_id}")
 async def get_chain_info_endpoint(chain_id: int):
     """Get chain-specific information."""
