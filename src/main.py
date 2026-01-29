@@ -1899,7 +1899,7 @@ class BotVerifyRequest(BaseModel):
 import os
 import asyncio
 from playwright.async_api import async_playwright
-from playwright_stealth import Stealth
+import playwright_stealth
 
 class SocialVerificationEngine:
     def __init__(self, headless=True):
