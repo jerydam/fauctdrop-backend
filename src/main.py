@@ -2720,12 +2720,12 @@ CHAIN_RPC_URLS = {
 
 alchemy_clients = {
     Chain.ethereum: Alchemy(api_key=ALCHEMY_API_KEY, network=Network.ETH_MAINNET),
-    Chain.base:     Alchemy(api_key=ALCHEMY_API_KEY, network=Network.BASE_MAINNET),
+    Chain.base:     Alchemy(api_key=ALCHEMY_API_KEY, network=Network.BASE),
+    Chain.celo:     Alchemy(api_key=ALCHEMY_API_KEY, network=Network.CELO), 
     Chain.arbitrum: Alchemy(api_key=ALCHEMY_API_KEY, network=Network.ARB_MAINNET),
-    Chain.celo:     Alchemy(api_key=ALCHEMY_API_KEY, network=Network.CELO_MAINNET),
     # Lisk is a newer addition; if Network.LISK_MAINNET is missing, 
     # check the debug step below.
-    Chain.lisk:     Alchemy(api_key=ALCHEMY_API_KEY, network=Network.LISK_MAINNET),
+    Chain.lisk:     Alchemy(api_key=ALCHEMY_API_KEY, network=Network.LISK),
 }
 
 # 4. Update the Middleware logic
