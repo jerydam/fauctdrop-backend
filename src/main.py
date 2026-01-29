@@ -24,7 +24,7 @@ import asyncio
 import secrets
 import json
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth
 import random
 from datetime import datetime, timezone, timedelta
 import dateutil.parser
@@ -1899,14 +1899,14 @@ class BotVerifyRequest(BaseModel):
 import os
 import asyncio
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth
 
 class SocialVerificationEngine:
     def __init__(self, headless=True):
         self.headless = headless
         # Path to your root bot folder
         self.user_data_dir = os.path.abspath("./bot_browser_data")
-        
+        self.stealth_config = Stealth()
 
     async def _setup_browser(self, p):
         if not os.path.exists(self.user_data_dir):
@@ -1924,11 +1924,9 @@ class SocialVerificationEngine:
             ],
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
-        
-        # APPLY STEALTH TO THE CONTEXT HERE
-        await stealth_async(context) 
-        
+        await self.stealth_config.apply_stealth_async(context)
         return context
+
     async def _check_if_logged_in(self, page):
         """Check if the bot is logged into Twitter"""
         try:
