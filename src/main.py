@@ -24,7 +24,7 @@ import asyncio
 import secrets
 import json
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async_async
+from playwright_stealth import stealth_async
 import random
 from datetime import datetime, timezone, timedelta
 import dateutil.parser
