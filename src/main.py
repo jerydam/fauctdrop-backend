@@ -1906,7 +1906,10 @@ class SocialVerificationEngine:
         self.headless = headless
         # Path to your root bot folder
         self.user_data_dir = os.path.abspath("./bot_browser_data")
-        
+        if not os.path.exists(self.user_data_dir):
+            os.makedirs(self.user_data_dir)
+            print(f"📁 Created missing bot session directory: {self.user_data_dir}")
+            
     async def _setup_browser(self, p):
         if not os.path.exists(self.user_data_dir):
             raise Exception(f"Bot session folder missing at {self.user_data_dir}")
