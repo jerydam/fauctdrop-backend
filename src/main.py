@@ -2722,7 +2722,6 @@ class Chain(str, Enum):
         return str.__str__(self)
 
 CHAIN_RPC_URLS = {
-    Chain.ethereum: f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}",
     Chain.base:     f"https://base-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}",
     Chain.arbitrum: f"https://arb-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}",
     Chain.celo:     f"https://celo-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}",
@@ -2730,15 +2729,14 @@ CHAIN_RPC_URLS = {
 }
 
 alchemy_clients = {
-    Chain.ethereum: Alchemy(api_key=ALCHEMY_API_KEY, network=Network.ETH_MAINNET),
-    Chain.base:     Alchemy(api_key=ALCHEMY_API_KEY, network=Network.BASE),
-    Chain.arbitrum: Alchemy(api_key=ALCHEMY_API_KEY, network=Network.ARB_MAINNET),
-    Chain.celo:     Alchemy(api_key=ALCHEMY_API_KEY, network=Network.CELO),
+    Chain.BASE_MAINNET: Alchemy(api_key=ALCHEMY_API_KEY, network=Network.BASE),
+    Chain.ARB_MAINNET: Alchemy(api_key=ALCHEMY_API_KEY, network=Network.ARB_MAINNET),
+    Chain.CELO_MAINNET: Alchemy(api_key=ALCHEMY_API_KEY, network=Network.CELO),
 }
 
 # Try to add Lisk support if available
 try:
-    alchemy_clients[Chain.lisk] = Alchemy(api_key=ALCHEMY_API_KEY, network=Network.LISK)
+    alchemy_clients[Chain.LISK_MAINNET] = Alchemy(api_key=ALCHEMY_API_KEY, network=Network.LISK)
 except AttributeError:
     print("⚠️ Lisk not supported in this Alchemy SDK version")
    
