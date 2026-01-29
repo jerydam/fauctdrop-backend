@@ -2704,42 +2704,67 @@ if not ALCHEMY_API_KEY:
     raise ValueError("ALCHEMY_API_KEY not set in .env")
 
 class Chain(str, Enum):
-    ETH_MAINNET = 'eth-mainnet'
-    ETH_GOERLI = 'eth-goerli'
-    MATIC_MAINNET = ('polygon-mainnet',)
-    MATIC_MUMBAI = ('polygon-mumbai',)
-    OPT_MAINNET = ('opt-mainnet',)
-    OPT_GOERLI = ('opt-goerli',)
-    OPT_KOVAN = ('opt-kovan',)
-    ARB_MAINNET = ('arb-mainnet',)
-    ARB_GOERLI = ('arb-goerli',)
-    ASTAR_MAINNET = ('astar-mainnet',)
-    BASE_MAINNET = ('base-mainnet',)
-    CELO_MAINNET = ('celo-mainnet',)
-    LISK_MAINNET = ('lisk-mainnet',)
-    
-    def __str__(self) -> str:
-        return str.__str__(self)
+    ethereum = "ethereum"
+    base     = "base"
+    arbitrum = "arbitrum"
+    celo     = "celo"
+    lisk     = "lisk"
 
 CHAIN_RPC_URLS = {
+    Chain.ethereum: f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}",
     Chain.base:     f"https://base-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}",
     Chain.arbitrum: f"https://arb-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}",
     Chain.celo:     f"https://celo-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}",
     Chain.lisk:     f"https://lisk-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}",
 }
 
+# IMMEDIATE FIX FOR DEPLOYMENT
+# Replace lines 2720-2727 in main.py with this:
+
+# Initialize only Ethereum and Arbitrum (most reliable)
 alchemy_clients = {
-    Chain.BASE_MAINNET: Alchemy(api_key=ALCHEMY_API_KEY, network=Network.BASE),
-    Chain.ARB_MAINNET: Alchemy(api_key=ALCHEMY_API_KEY, network=Network.ARB_MAINNET),
-    Chain.CELO_MAINNET: Alchemy(api_key=ALCHEMY_API_KEY, network=Network.CELO),
+    Chain.ethereum: Alchemy(api_key=ALCHEMY_API_KEY, network=Network.ETH_MAINNET),
+    Chain.arbitrum: Alchemy(api_key=ALCHEMY_API_KEY, network=Network.ARB_MAINNET),
 }
 
-# Try to add Lisk support if available
+# Optional: Try to add other networks but don't crash if they fail
 try:
-    alchemy_clients[Chain.LISK_MAINNET] = Alchemy(api_key=ALCHEMY_API_KEY, network=Network.LISK)
-except AttributeError:
-    print("⚠️ Lisk not supported in this Alchemy SDK version")
-   
+    # Try Base with different names
+    try:
+        alchemy_clients[Chain.base] = Alchemy(api_key=ALCHEMY_API_KEY, network=Network.BASE_MAINNET)
+    except (AttributeError, KeyError):
+        try:
+            alchemy_clients[Chain.base] = Alchemy(api_key=ALCHEMY_API_KEY, network=Network.BASE)
+        except (AttributeError, KeyError):
+            pass  # Skip if not available
+except Exception as e:
+    print(f"⚠️ Base Alchemy client initialization skipped: {e}")
+
+try:
+    # Try Celo
+    try:
+        alchemy_clients[Chain.celo] = Alchemy(api_key=ALCHEMY_API_KEY, network=Network.CELO_MAINNET)
+    except (AttributeError, KeyError):
+        try:
+            alchemy_clients[Chain.celo] = Alchemy(api_key=ALCHEMY_API_KEY, network=Network.CELO)
+        except (AttributeError, KeyError):
+            pass
+except Exception as e:
+    print(f"⚠️ Celo Alchemy client initialization skipped: {e}")
+
+try:
+    # Try Lisk
+    try:
+        alchemy_clients[Chain.lisk] = Alchemy(api_key=ALCHEMY_API_KEY, network=Network.LISK_MAINNET)
+    except (AttributeError, KeyError):
+        try:
+            alchemy_clients[Chain.lisk] = Alchemy(api_key=ALCHEMY_API_KEY, network=Network.LISK)
+        except (AttributeError, KeyError):
+            pass
+except Exception as e:
+    print(f"⚠️ Lisk Alchemy client initialization skipped: {e}")
+
+print(f"✅ Initialized Alchemy clients for chains: {list(alchemy_clients.keys())}")
 
 # 4. Update the Middleware logic
 def get_w3(chain: Chain) -> Web3:
