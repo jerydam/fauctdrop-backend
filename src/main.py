@@ -1931,6 +1931,12 @@ class SocialVerificationEngine:
                 "--disable-gpu",               # Saves significant RAM
                 "--disable-extensions",        # Saves RAM
                 "--no-zygote",                 # Reduces background processes
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage", # MANDATORY for Render/Docker
+                "--disable-gpu",           # Saves RAM
+                "--single-process",        # Essential for 512MB RAM limit
+
                 "--single-process",            # Forces Chromium into one process (RAM saver)
                 "--disable-web-security",
                 "--disable-features=IsolateOrigins,site-per-process",
