@@ -2704,11 +2704,22 @@ if not ALCHEMY_API_KEY:
     raise ValueError("ALCHEMY_API_KEY not set in .env")
 
 class Chain(str, Enum):
-    ethereum = "ethereum"
-    base     = "base"
-    arbitrum = "arbitrum"
-    celo     = "celo"
-    lisk     = "lisk"
+    ETH_MAINNET = 'eth-mainnet'
+    ETH_GOERLI = 'eth-goerli'
+    MATIC_MAINNET = ('polygon-mainnet',)
+    MATIC_MUMBAI = ('polygon-mumbai',)
+    OPT_MAINNET = ('opt-mainnet',)
+    OPT_GOERLI = ('opt-goerli',)
+    OPT_KOVAN = ('opt-kovan',)
+    ARB_MAINNET = ('arb-mainnet',)
+    ARB_GOERLI = ('arb-goerli',)
+    ASTAR_MAINNET = ('astar-mainnet',)
+    BASE_MAINNET = ('base-mainnet',)
+    CELO_MAINNET = ('celo-mainnet',)
+    LISK_MAINNET = ('lisk-mainnet',)
+    
+    def __str__(self) -> str:
+        return str.__str__(self)
 
 CHAIN_RPC_URLS = {
     Chain.ethereum: f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}",
