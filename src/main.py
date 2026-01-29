@@ -1907,7 +1907,6 @@ class SocialVerificationEngine:
         # Path to your root bot folder
         self.user_data_dir = os.path.abspath("./bot_browser_data")
         
-
     async def _setup_browser(self, p):
         if not os.path.exists(self.user_data_dir):
             raise Exception(f"Bot session folder missing at {self.user_data_dir}")
@@ -1924,10 +1923,9 @@ class SocialVerificationEngine:
             ],
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
-        # Apply stealth directly
         await playwright_stealth.stealth_async(context)
         return context
-
+    
     async def _check_if_logged_in(self, page):
         """Check if the bot is logged into Twitter"""
         try:
