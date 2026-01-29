@@ -28,18 +28,20 @@ RUN apt-get update && apt-get install -y \
     libasound2 \
     libpango-1.0-0 \
     libcairo2 \
+    libxfixes3 \
+    libx11-6 \
+    libxext6 \
     fonts-liberation \
     fonts-unifont \
-    wget \
     && rm -rf /var/lib/apt/lists/*
 
+# Now install playwright and chromium
+RUN pip install playwright
+RUN playwright install chromium
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
-
-# Install Playwright browser into the fixed path
-RUN playwright install chromium
 
 # Copy project files
 COPY . .
