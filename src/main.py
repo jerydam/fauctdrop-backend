@@ -6327,14 +6327,10 @@ async def get_quest_by_slug(slug: str):
     
 @app.get("/api/quests", tags=["Quest Management"])
 async def get_all_quests():
-    """
-    Fetch all quests from Supabase with computed fields.
-    Handles missing dates gracefully to prevent crashes on drafts.
-    """
     try:
         print("🔍 Fetching all quests from Supabase...")
         
-        # Fetch all quests
+        # 1. Fetch all quests metadata
         response = supabase.table("quests").select("*").execute()
         
         if not response.data:
@@ -6346,69 +6342,65 @@ async def get_all_quests():
             try:
                 faucet_address = quest_row.get("faucet_address")
                 
-                # Fetch tasks count 
-                tasks_response = supabase.table("faucet_tasks").select("tasks", count="exact").eq(
+                # 2. Fetch tasks count 
+                tasks_res = supabase.table("faucet_tasks").select("tasks").eq(
                     "faucet_address", faucet_address
                 ).execute()
                 
                 tasks_count = 0
-                if tasks_response.data and len(tasks_response.data) > 0:
-                    tasks_array = tasks_response.data[0].get("tasks", [])
+                if tasks_res.data:
+                    tasks_array = tasks_res.data[0].get("tasks", [])
                     tasks_count = len(tasks_array) if tasks_array else 0
                     
-                # Fetch participants count
-                try:
-                    participants_response = supabase.table("quest_submissions").select(
-                        "user_address", count="exact"
-                    ).eq("faucet_address", faucet_address).execute()
+                # 3. Fetch participants count
+                p_res = supabase.table("quest_participants").select(
+                    "wallet_address", count="exact"
+                ).eq("quest_address", faucet_address).execute()
+                participants_count = p_res.count if hasattr(p_res, 'count') else 0
                     
-                    participants_count = participants_response.count if hasattr(participants_response, 'count') else 0
-                except Exception:
-                    participants_count = 0
-                    
-                # --- FIX: SAFE DATE PARSING ---
-                start_date = None
-                raw_start = quest_row.get("start_date")
-                if raw_start:
-                    start_date = datetime.fromisoformat(raw_start.replace('Z', '+00:00')).strftime('%Y-%m-%d')
+                # 4. SAFE DATE PARSING
+                def format_date(raw_date):
+                    if not raw_date: return None
+                    try:
+                        return datetime.fromisoformat(raw_date.replace('Z', '+00:00')).strftime('%Y-%m-%d')
+                    except: return None
 
-                end_date = None
-                raw_end = quest_row.get("end_date")
-                if raw_end:
-                    end_date = datetime.fromisoformat(raw_end.replace('Z', '+00:00')).strftime('%Y-%m-%d')
-                # ------------------------------
-                
-                # Build quest overview
+                # 5. ASSEMBLE DATA (Crucial: Includes 'slug')
                 quest_data = {
                     "faucetAddress": faucet_address,
+                    "slug": quest_row.get("slug") or faucet_address, # Fallback to address if slug is missing
                     "title": quest_row.get("title"),
                     "description": quest_row.get("description"),
                     "isActive": quest_row.get("is_active", False),
-                    "isDraft": quest_row.get("is_draft", False), # Useful for frontend filtering
+                    "isDraft": quest_row.get("is_draft", False),
                     "rewardPool": quest_row.get("reward_pool"),
                     "creatorAddress": quest_row.get("creator_address"),
-                    "startDate": start_date,
-                    "endDate": end_date,
+                    "startDate": format_date(quest_row.get("start_date")),
+                    "endDate": format_date(quest_row.get("end_date")),
                     "tasksCount": tasks_count,
-                    "participantsCount": participants_count,
+                    "totalParticipants": participants_count, # Matches frontend interface
                     "imageUrl": quest_row.get("image_url"),
+                    "tokenSymbol": quest_row.get("token_symbol")
                 }
                 
                 quests_list.append(quest_data)
                 
             except Exception as e:
-                # Log the specific error but don't crash the whole endpoint
-                print(f"⚠️ Error processing quest {quest_row.get('faucet_address', 'unknown')}: {str(e)}")
+                print(f"⚠️ Error processing quest {faucet_address}: {str(e)}")
                 continue
         
-        print(f"✅ Successfully fetched {len(quests_list)} quests")
-        return {"success": True, "quests": quests_list, "count": len(quests_list)}
+        # 6. RETURN THE CONSTRUCTED LIST (Outside the loop!)
+        return {
+            "success": True, 
+            "quests": quests_list, 
+            "count": len(quests_list)
+        }
         
     except Exception as e:
         print(f"❌ Error fetching quests: {str(e)}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to fetch quests: {str(e)}")
-
+        raise HTTPException(status_code=500, detail=str(e))
+    
 async def finalize_rewards(request: FinalizeRewardsRequest):
     # Mocking success for demo, actual implementation requires Web3 interaction
     if len(request.winners) != len(request.amounts):
