@@ -9,6 +9,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from typing import List, Optional, Literal, Dict, Any, Tuple
 from typing import Union
 from datetime import datetime, timedelta, timezone
+import re
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 # FIX: Use Web3's constants for ADDRESS_ZERO
 from web3.constants import ADDRESS_ZERO as ZeroAddress
@@ -3192,6 +3193,14 @@ async def process_auto_approval(submission_id: str, faucet_address: str, wallet_
 
     except Exception as e:
         print(f"Auto-approval error for {submission_id}: {str(e)}")
+def generate_slug(name: str):
+    if not name:
+        return "faucet"
+    # Create a URL-friendly slug
+    slug = name.lower().strip()
+    slug = re.sub(r'[^\w\s-]', '', slug)
+    slug = re.sub(r'[\s_-]+', '-', slug)
+    return slug
 
 async def get_all_faucets_from_network(self, network: Dict) -> List[Dict]:
         """Fetch all faucets from a single network"""
@@ -6190,6 +6199,132 @@ async def get_quest_by_address(faucetAddress: str):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/faucets/by-slug/{slug_or_address}", tags=["Faucet Management"])
+async def get_faucet_address_by_slug(slug_or_address: str):
+    try:
+        clean_input = slug_or_address.lower().strip()
+        
+        # 1. Search by SLUG first
+        response = supabase.table("faucets").select("*").eq("slug", clean_input).execute()
+        
+        if response.data and len(response.data) > 0:
+            return {
+                "success": True,
+                "faucetAddress": response.data[0].get("faucet_address"),
+                "chainId": response.data[0].get("chain_id"),
+                "name": response.data[0].get("name"),
+                "slug": response.data[0].get("slug")
+            }
+
+        # 2. If Slug search fails, check if input is a valid ETH ADDRESS
+        if clean_input.startswith("0x") and len(clean_input) == 42:
+            addr_response = supabase.table("faucets").select("*").eq("faucet_address", clean_input).execute()
+            
+            if addr_response.data and len(addr_response.data) > 0:
+                faucet = addr_response.data[0]
+                
+                # 3. AUTO-GENERATE & SAVE SLUG IF MISSING
+                # This fixes the 404 for existing faucets
+                if not faucet.get("slug"):
+                    base_slug = generate_slug(faucet.get("name"))
+                    # Append unique suffix to prevent collisions
+                    final_slug = f"{base_slug}-{clean_input[-4:]}"
+                    
+                    # Save it back to Supabase permanently
+                    supabase.table("faucets").update({"slug": final_slug}).eq("faucet_address", clean_input).execute()
+                    faucet["slug"] = final_slug
+                
+                return {
+                    "success": True,
+                    "faucetAddress": faucet.get("faucet_address"),
+                    "chainId": faucet.get("chain_id"),
+                    "name": faucet.get("name"),
+                    "slug": faucet.get("slug")
+                }
+
+        # 4. Truly not found
+        raise HTTPException(status_code=404, detail="Faucet not found")
+        
+    except HTTPException as he:
+        # Don't let the 'except Exception' block catch actual HTTP 404s
+        raise he
+    except Exception as e:
+        print(f"❌ Error resolving: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal database error")
+@app.get("/api/quests/by-slug/{slug}", tags=["Quest Management"])
+async def get_quest_by_slug(slug: str):
+    """
+    Fetch a single quest using its unique slug identifier.
+    Used for frontend dynamic routing.
+    """
+    try:
+        print(f"🔍 Fetching quest details for slug: {slug}")
+        
+        # 1. FETCH CORE METADATA BY SLUG
+        # Ensure your Supabase 'quests' table has a 'slug' column
+        response = supabase.table("quests").select("*").eq("slug", slug).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Quest not found")
+        
+        quest_row = response.data[0]
+        # We need the actual address to fetch participants and tasks
+        faucet_address = quest_row.get("faucet_address")
+
+        # 2. FETCH PARTICIPANT COUNT
+        participants_count_res = supabase.table("quest_participants")\
+            .select("wallet_address", count="exact")\
+            .eq("quest_address", faucet_address)\
+            .execute()
+        
+        total_participants = participants_count_res.count if hasattr(participants_count_res, 'count') else 0
+        
+        # 3. REHYDRATE TASKS
+        tasks = []
+        try:
+            tasks_res = supabase.table("faucet_tasks").select("tasks").eq(
+                "faucet_address", faucet_address
+            ).execute()
+            
+            if tasks_res.data:
+                tasks = tasks_res.data[0].get("tasks", [])
+        except Exception as task_err:
+            print(f"⚠️ Task rehydration failed for {slug}: {str(task_err)}")
+        
+        # 4. DATE PARSING HELPER
+        def parse_iso_date(date_str):
+            if not date_str: return None
+            try:
+                clean_date = date_str.replace('Z', '+00:00')
+                return datetime.fromisoformat(clean_date).strftime('%Y-%m-%d')
+            except: return None
+
+        # 5. ASSEMBLE DATA (Matches your QuestOverview Interface)
+        quest_data = {
+            "faucetAddress": faucet_address,
+            "slug": quest_row.get("slug"),
+            "title": quest_row.get("title"),
+            "totalParticipants": total_participants,
+            "description": quest_row.get("description"),
+            "isActive": quest_row.get("is_active", False),
+            "rewardPool": quest_row.get("reward_pool"),
+            "creatorAddress": quest_row.get("creator_address"),
+            "startDate": parse_iso_date(quest_row.get("start_date")),
+            "endDate": parse_iso_date(quest_row.get("end_date")),
+            "tasks": tasks,
+            "tokenSymbol": quest_row.get("token_symbol"),
+            "imageUrl": quest_row.get("image_url"),
+            "tokenAddress": quest_row.get("token_address")
+        }
+        
+        return {"success": True, "quest": quest_data}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error fetching quest by slug: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    
 @app.get("/api/quests", tags=["Quest Management"])
 async def get_all_quests():
     """
