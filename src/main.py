@@ -1855,16 +1855,25 @@ class DeleteFaucetRequest(BaseModel):
     faucetAddress: str
     userAddress: str # The initiator of the deletion
     chainId: int
+
 class QuestDraft(BaseModel):
     creatorAddress: str
     title: str
-    description: str
-    imageUrl: str
+    description: Optional[str] = ""
+    imageUrl: Optional[str] = ""
     rewardPool: str
     rewardTokenType: str
-    tokenAddress: str
-    distributionConfig: dict
-    faucetAddress: str  # Will be set after deployment
+    tokenAddress: Optional[str] = None
+    # Use Field to map the frontend's camelCase to backend's snake_case
+    token_symbol: Optional[str] = Field(None, alias="tokenSymbol")
+    distributionConfig: Optional[Dict[str, Any]] = None
+    faucetAddress: Optional[str] = None
+    tasks: Optional[List[Dict[str, Any]]] = None
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        from_attributes=True
+    )
 
 class QuestTask(BaseModel):
     id: str
@@ -1878,17 +1887,6 @@ class QuestTask(BaseModel):
     verificationType: str
     targetPlatform: Optional[str] = None
     stage: str
-
-class QuestDraft(BaseModel):
-    faucetAddress: str  
-    creatorAddress: str
-    title: str
-    description: Optional[str] = ""
-    imageUrl: Optional[str] = ""
-    rewardPool: Optional[str] = "0"
-    rewardTokenType: Optional[str] = "native"
-    tokenAddress: Optional[str] = None
-    distributionConfig: Optional[Dict] = {}
 
 class BotVerifyRequest(BaseModel):
     submissionId: str
@@ -6490,6 +6488,7 @@ async def add_faucet_tasks_endpoint(request: AddTasksRequest):
 # --- USER PROFILE ENDPOINTS ---
 @app.post("/api/quests/draft", tags=["Quest Management"])
 async def save_quest_draft(draft: QuestDraft):
+    
     try:
         if not Web3.is_address(draft.creatorAddress):
             raise HTTPException(status_code=400, detail="Invalid creator address")
@@ -6497,24 +6496,32 @@ async def save_quest_draft(draft: QuestDraft):
         faucet_address_val = draft.faucetAddress 
         creator_address_cs = Web3.to_checksum_address(draft.creatorAddress)
 
-        # 1. Save Quest Metadata
+        # 1. Generate slug to satisfy NOT-NULL constraint
+        # We use a 4-character UUID suffix to ensure drafts don't collide
+        base_slug = generate_slug(draft.title)
+        quest_slug = f"{base_slug}-{str(uuid.uuid4())[:4]}"
+
+        # 2. Map fields carefully to match Supabase snake_case columns
         draft_data_db = {
-            "faucet_address": faucet_address_val,
+            "faucet_address": draft.faucetAddress,
             "creator_address": creator_address_cs,
             "title": draft.title,
+            "slug": quest_slug,
             "description": draft.description,
             "image_url": draft.imageUrl,
             "reward_pool": draft.rewardPool,
             "reward_token_type": draft.rewardTokenType,
             "token_address": draft.tokenAddress,
+            "token_symbol": draft.token_symbol, # Accessing the snake_case attribute
             "distribution_config": draft.distributionConfig,
             "is_draft": True,
             "updated_at": datetime.now().isoformat()
         }
+
+        # 3. Upsert Quest Metadata
         supabase.table("quests").upsert(draft_data_db, on_conflict="faucet_address").execute()
 
-        # 2. Save Tasks (Including System Tasks)
-        # Assuming your Pydantic model 'QuestDraft' is updated to accept a 'tasks' list
+        # 4. Save Tasks
         if hasattr(draft, 'tasks') and draft.tasks:
             tasks_db = {
                 "faucet_address": faucet_address_val,
@@ -6524,11 +6531,11 @@ async def save_quest_draft(draft: QuestDraft):
             }
             supabase.table("faucet_tasks").upsert(tasks_db, on_conflict="faucet_address").execute()
 
-        return {"success": True, "faucetAddress": faucet_address_val}
+        return {"success": True, "faucetAddress": faucet_address_val, "slug": quest_slug}
+        
     except Exception as e:
         print(f"Error saving draft: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.delete("/api/quests/draft/{draftId}", tags=["Quest Management"])
 async def delete_quest_draft(draftId: str):
@@ -6562,9 +6569,6 @@ async def delete_quest_draft(draftId: str):
 # --- FINALIZE QUEST (Phase 2) ---
 @app.post("/api/quests/finalize", tags=["Quest Management"])
 async def finalize_quest(finalize: QuestFinalize):
-    """
-    Finalizes a quest. Handles both Pydantic Models and Dicts safely.
-    """
     try:
         print(f"🚀 Finalizing Quest. Real Address: {finalize.faucetAddress}")
 
@@ -6575,82 +6579,80 @@ async def finalize_quest(finalize: QuestFinalize):
         
         # 1. FETCH DATA FROM DRAFT
         draft_data = {}
+        existing_slug = None
+        
         if finalize.draftId:
             draft_res = supabase.table("quests").select("*").eq("faucet_address", finalize.draftId).execute()
             if draft_res.data:
                 draft_data = draft_res.data[0]
-        
+                existing_slug = draft_data.get("slug")
+                print(f"📦 Found draft data. Existing slug: {existing_slug}")
+
         # 2. DETERMINE FINAL CREATOR
-        final_creator = finalize.creatorAddress
-        if not final_creator and draft_data.get("creator_address"):
-            final_creator = draft_data.get("creator_address")
-        
+        final_creator = finalize.creatorAddress or draft_data.get("creator_address")
         if not final_creator:
             raise HTTPException(status_code=400, detail="Creator address is missing.")
-            
         final_creator = Web3.to_checksum_address(final_creator)
 
         # 3. HELPER: Safe Dict Converter
-        # This prevents the "dict object has no attribute dict" error
         def to_dict(obj):
-            if hasattr(obj, 'dict'): return obj.dict() # Pydantic v1
-            if hasattr(obj, 'model_dump'): return obj.model_dump() # Pydantic v2
-            return obj # It's already a dict
+            if hasattr(obj, 'model_dump'): return obj.model_dump()
+            if hasattr(obj, 'dict'): return obj.dict()
+            return obj 
 
         # 4. PREPARE DATA
-        # Safe conversion for stage requirements
         stage_reqs = to_dict(finalize.stagePassRequirements)
-        
-        # Safe conversion for tasks
         clean_tasks = [to_dict(t) for t in finalize.tasks]
 
-        # 5. UPSERT QUESTS TABLE
+        # 5. THE CRITICAL FIX: Delete the draft BEFORE upserting the live quest
+        # This prevents the "Duplicate Slug" unique constraint error.
+        if finalize.draftId and finalize.draftId.lower() != finalize.faucetAddress.lower():
+            print(f"🗑️ Deleting draft {finalize.draftId} to free up slug '{existing_slug}'")
+            supabase.table("quests").delete().eq("faucet_address", finalize.draftId).execute()
+            supabase.table("faucet_tasks").delete().eq("faucet_address", finalize.draftId).execute()
+
+        # 6. UPSERT QUESTS TABLE
         final_quest_data = {
             "faucet_address": real_address_cs,
             "creator_address": final_creator,
             "title": finalize.title or draft_data.get("title"),
+            "slug": existing_slug or generate_slug(finalize.title or "quest"), # Use slug from draft
             "description": finalize.description or draft_data.get("description"),
             "image_url": finalize.imageUrl or draft_data.get("image_url"),
             "reward_pool": draft_data.get("reward_pool"),
             "reward_token_type": draft_data.get("reward_token_type"),
             "token_address": draft_data.get("token_address"),
-            "distribution_config": draft_data.get("distribution_config"),
+            "token_symbol": draft_data.get("token_symbol"), # Fixed: ensures symbol saves
             "start_date": finalize.startDate,
             "end_date": finalize.endDate,
-            "token_symbol": draft_data.get("token_symbol"),
             "claim_window_hours": finalize.claimWindowHours,
-            "stage_pass_requirements": stage_reqs, # <--- FIXED HERE
+            "stage_pass_requirements": stage_reqs,
             "enforce_stage_rules": finalize.enforceStageRules,
             "is_draft": False,
             "is_active": True,
             "updated_at": datetime.now().isoformat()
         }
 
+        # Now this will succeed because the old slug was deleted in step 5
         supabase.table("quests").upsert(final_quest_data, on_conflict="faucet_address").execute()
 
-        # 6. UPSERT FAUCET_TASKS TABLE
+        # 7. UPSERT FAUCET_TASKS TABLE
         tasks_data = {
             "faucet_address": real_address_cs,
             "created_by": final_creator,
-            "tasks": clean_tasks, # <--- FIXED HERE
+            "tasks": clean_tasks,
             "updated_at": datetime.now().isoformat()
         }
         supabase.table("faucet_tasks").upsert(tasks_data, on_conflict="faucet_address").execute()
 
-        # 7. DELETE OLD DRAFT
-        # Ensure we don't delete if the draftId IS the same as the new address (edge case)
-        if finalize.draftId and finalize.draftId.lower() != finalize.faucetAddress.lower():
-            print(f"🗑️ Deleting draft: {finalize.draftId}")
-            supabase.table("quests").delete().eq("faucet_address", finalize.draftId).execute()
-            supabase.table("faucet_tasks").delete().eq("faucet_address", finalize.draftId).execute()
-
-        return {"success": True, "message": "Quest finalized and live!"}
+        return {"success": True, "message": "Quest finalized and live!", "slug": existing_slug}
 
     except Exception as e:
         print(f"❌ Error finalizing quest: {str(e)}")
         import traceback
-        traceback.print_exc() # Helps see exactly where it crashes in logs
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 # --- OPTIONAL: List drafts for user ---
 @app.get("/api/quests/drafts/{creator_address}", tags=["Quest Management"])
 async def get_user_drafts(creator_address: str):
