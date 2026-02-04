@@ -10,6 +10,7 @@ from typing import List, Optional, Literal, Dict, Any, Tuple
 from typing import Union
 from datetime import datetime, timedelta, timezone
 import re
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 # FIX: Use Web3's constants for ADDRESS_ZERO
 from web3.constants import ADDRESS_ZERO as ZeroAddress
 from web3.middleware import ExtraDataToPOAMiddleware
@@ -24,6 +25,8 @@ import os
 import asyncio
 import secrets
 import json
+from playwright.async_api import async_playwright
+import playwright_stealth
 import random
 from datetime import datetime, timezone, timedelta
 import dateutil.parser
@@ -75,6 +78,70 @@ import traceback # Added for better error logging
 from authlib.integrations.starlette_client import OAuth
 from starlette.config import Config
 
+config = Config(environ=os.environ)
+oauth = OAuth(config)
+
+oauth.register(
+    name='discord',
+    client_id=config("DISCORD_CLIENT_ID"),
+    client_secret=config("DISCORD_CLIENT_SECRET"),
+    authorize_url='https://discord.com/api/oauth2/authorize',
+    access_token_url='https://discord.com/api/oauth2/token',
+    api_base_url='https://discord.com/api/',
+    client_kwargs={'scope': 'identify guilds guilds.members.read'}
+)
+
+async def get_discord_user(access_token: str) -> dict:
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            "https://discord.com/api/users/@me",
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+async def verify_membership_in_guild(access_token: str, guild_id: str):
+    url = f"https://discord.com/api/users/@me/guilds/{guild_id}/member"
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
+        if resp.status_code == 200:
+            return True, resp.json(), "Member"
+        elif resp.status_code == 404:
+            return False, None, "Not member"
+        else:
+            return False, None, f"Error {resp.status_code}"
+        
+
+auth_router = APIRouter(prefix="/auth", tags=["auth"])
+
+@auth_router.get("/discord")
+async def discord_login(request: Request):
+    redirect_uri = str(request.url_for("discord_callback"))
+    state = json.dumps({"return_to": "/quest"})  # Add quest_id later if needed
+    return await oauth.discord.authorize_redirect(request, redirect_uri, state=state)
+
+@auth_router.get("/discord/callback", name="discord_callback")
+async def discord_callback(request: Request):
+    try:
+        token = await oauth.discord.authorize_access_token(request)
+        access_token = token["access_token"]
+        user = await get_discord_user(access_token)
+        discord_id = user["id"]
+
+        state_str = request.query_params.get("state")
+        state_data = json.loads(state_str) if state_str else {}
+        return_to = state_data.get("return_to", "/quest")
+
+        # Example: check membership in a guild (guild_id from state or hardcoded)
+        # is_member, member_data, msg = await verify_membership_in_guild(access_token, "YOUR_GUILD_ID")
+
+        return RedirectResponse(
+            url=f"https://app.faucetdrop.io{return_to}?success=discord_linked&discord_id={discord_id}"
+        )
+    except Exception as e:
+        print(f"Discord callback error: {e}")
+        return RedirectResponse(url="https://app.faucetdrop.io/quest?error=discord_failed")
+
 
 
 app = FastAPI(title="FaucetDrops Backend API")
@@ -86,7 +153,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS", "PUT", "DELETE"], # Added PUT/DELETE for task management
     allow_headers=["Content-Type"],
 )
-
+app.include_router(auth_router)
 # Validate environment variables
 if not PRIVATE_KEY or PRIVATE_KEY == "0x" + "0"*64:
     pass # Let initialization continue, but rely on function-level gas checks.
@@ -1807,47 +1874,6 @@ class QuestDraft(BaseModel):
         populate_by_name=True,
         from_attributes=True
     )
-# In main.py, locate the QuestFinalize class
-class QuestFinalize(BaseModel):
-    faucetAddress: str 
-    draftId: Optional[str] = None
-    
-    creatorAddress: Optional[str] = None
-    title: Optional[str] = None
-    description: Optional[str] = None
-    imageUrl: Optional[str] = None
-    
-    # 👇 ADD THIS FIELD
-    token_symbol: Optional[str] = Field(None, alias="tokenSymbol") 
-    
-    startDate: str
-    endDate: str
-    claimWindowHours: int
-    tasks: List[Union[dict, QuestTask]] 
-    
-    stagePassRequirements: Union[dict, StagePassRequirements] 
-    
-    enforceStageRules: bool = False
-
-# Locate the Quest class (used for the /api/quests endpoint)
-class Quest(BaseModel):
-    creatorAddress: str
-    title: str
-    description: str
-    isActive: bool = True
-    rewardPool: str
-    startDate: str
-    endDate: str
-    imageUrl: str 
-    faucetAddress: str
-    rewardTokenType: str
-    tokenAddress: str
-    
-    # 👇 ADD THIS FIELD
-    token_symbol: Optional[str] = Field(None, alias="tokenSymbol")
-    
-    tasks: List[QuestTask]
-    stagePassRequirements: StagePassRequirements
 
 class QuestTask(BaseModel):
     id: str
@@ -1868,9 +1894,563 @@ class BotVerifyRequest(BaseModel):
     walletAddress: str
     handle: str
     proofUrl: str
-    taskType: str  
-    taskId: str
+    taskType: str
 
+import os
+import asyncio
+from playwright.async_api import async_playwright
+import playwright_stealth
+
+class SocialVerificationEngine:
+    def __init__(self, headless=True):
+        self.headless = headless
+        # Path to your root bot folder
+        self.user_data_dir = os.path.abspath("./bot_browser_data")
+        if not os.path.exists(self.user_data_dir):
+            os.makedirs(self.user_data_dir)
+            print(f"📁 Created missing bot session directory: {self.user_data_dir}")
+
+   
+    async def _setup_browser(self, p):
+        # Instead of raising an exception, create the directory automatically.
+        # On Render Free, this folder is wiped on every restart.
+        if not os.path.exists(self.user_data_dir):
+            os.makedirs(self.user_data_dir, exist_ok=True)
+            print(f"📁 Created browser session directory at {self.user_data_dir}")
+                
+        context = await p.chromium.launch_persistent_context(
+            user_data_dir=self.user_data_dir,
+            headless=True,  
+            ignore_default_args=["--enable-automation"],
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",     # CRITICAL: Prevents crash in Docker
+                "--disable-gpu",               # Saves significant RAM
+                "--disable-extensions",        # Saves RAM
+                "--no-zygote",                 # Reduces background processes
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage", # MANDATORY for Render/Docker
+                "--disable-gpu",           # Saves RAM
+                "--single-process",        # Essential for 512MB RAM limit
+
+                "--single-process",            # Forces Chromium into one process (RAM saver)
+                "--disable-web-security",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--window-size=1280,720",      # Fixed window size saves memory
+            ],
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        
+        # Apply stealth to all pages in the context
+        await playwright_stealth.stealth_async(context)
+        return context
+
+    def clear_browser_cache(self):
+        """
+        Clears the browser data folder to save disk space.
+        Run this periodically or if the folder exceeds a certain size.
+        """
+        if os.path.exists(self.user_data_dir):
+            try:
+                # We remove the directory and recreate it to wipe everything
+                shutil.rmtree(self.user_data_dir)
+                os.makedirs(self.user_data_dir, exist_ok=True)
+                print("🧹 Disk Cleanup: Browser cache cleared.")
+            except Exception as e:
+                print(f"⚠️ Cleanup failed: {e}")
+
+    async def _check_if_logged_in(self, page):
+        """Check if the bot is logged into Twitter"""
+        try:
+            # Look for signs that we're logged in
+            await page.wait_for_timeout(2000)
+            
+            # Check for login-related elements
+            page_content = await page.content()
+            
+            if "login" in page_content.lower() or "sign in" in page_content.lower():
+                # Check if it's a login page
+                if await page.locator('input[name="text"]').count() > 0:  # Username field
+                    print("⚠️ Bot is NOT logged in!")
+                    return False
+            
+            print("✅ Bot appears to be logged in")
+            return True
+        except:
+            return True
+
+    async def _wait_for_content_load(self, page, max_wait=15):
+        """Wait for Twitter content to actually load"""
+        print("⏳ Waiting for content to load...")
+        
+        for i in range(max_wait):
+            # Check multiple indicators that content has loaded
+            user_cells = await page.locator('[data-testid="UserCell"]').count()
+            tweets = await page.locator('article[data-testid="tweet"]').count()
+            
+            if user_cells > 0:
+                print(f"✅ Content loaded! Found {user_cells} user cells")
+                return True
+            
+            if tweets > 0:
+                print(f"✅ Content loaded! Found {tweets} tweets")
+                return True
+            
+            # Check if we hit a rate limit or error page
+            page_text = await page.text_content('body')
+            if page_text and any(error in page_text.lower() for error in 
+                ['rate limit', 'try again', 'something went wrong', 'error']):
+                print("⚠️ Detected error or rate limit message")
+                await page.screenshot(path="debug_error_page.png")
+                return False
+            
+            print(f"⏳ Waiting for content... ({i+1}/{max_wait}s)")
+            await page.wait_for_timeout(1000)
+        
+        print("❌ Content did not load in time")
+        return False
+
+    async def verify_twitter(self, task_type: str, proof_url: str, participant_handle: str):
+        async with async_playwright() as p:
+            context = await self._setup_browser(p)
+            page = await context.new_page()
+            page.set_default_timeout(60000) 
+            
+            clean_handle = participant_handle.replace("@", "").strip().lower()
+            base_url = proof_url.split('?')[0].rstrip('/')
+            tweet_id = base_url.split('/')[-1]
+            
+            try:
+                if task_type == "follow":
+                    return await self._verify_follow(page, base_url, clean_handle)
+                elif task_type == "retweet":
+                    return await self._verify_retweet(page, base_url, tweet_id, clean_handle)
+                elif task_type == "like":
+                    return await self._verify_like(page, base_url, clean_handle)
+                elif task_type == "comment":
+                    return await self._verify_comment(page, base_url, tweet_id, clean_handle)
+                # ADD THIS:
+                elif task_type == "quote":
+                    return await self._verify_quote(page, proof_url, clean_handle)
+                
+                return False
+
+            except Exception as e:
+                print(f"❌ Critical Bot Error: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                await page.screenshot(path=f"debug_exception_{clean_handle}.png")
+                return False
+            finally:
+                await context.close()
+
+    async def _verify_comment(self, page, base_url, tweet_id, clean_handle):
+        """Verify if user commented/replied to the tweet"""
+        print(f"🤖 Checking comments/replies for @{clean_handle}")
+        
+        # Strategy 1: Check the tweet's replies directly
+        print(f"💬 Strategy 1: Checking tweet replies...")
+        try:
+            # Navigate to the tweet page (replies are shown below the main tweet)
+            await page.goto(base_url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(5000)
+            
+            # await page.screenshot(path=f"debug_tweet_page_{clean_handle}.png")
+            
+            # Scroll through replies looking for the user
+            for scroll_attempt in range(20):
+                # Get all tweets on the page (main tweet + replies)
+                tweets = await page.locator('article[data-testid="tweet"]').all()
+                print(f"📊 Found {len(tweets)} tweets/replies on page")
+                
+                for idx, tweet in enumerate(tweets):
+                    try:
+                        tweet_html = await tweet.inner_html()
+                        tweet_text = await tweet.inner_text()
+                        
+                        # Skip the first tweet (it's the original tweet, not a reply)
+                        if idx == 0:
+                            continue
+                        
+                        # Check if this reply is from the target user
+                        # Look for the user's handle in the tweet
+                        if f"@{clean_handle}" in tweet_text.lower() or f"/{clean_handle}" in tweet_html.lower():
+                            # Verify it's actually their tweet by checking the profile link
+                            links = await tweet.locator('a[role="link"]').all()
+                            for link in links:
+                                try:
+                                    href = await link.get_attribute('href')
+                                    if href and f"/{clean_handle}" in href.lower() and "/status/" in href:
+                                        print(f"✅ Found comment by @{clean_handle}!")
+                                        await page.screenshot(path=f"debug_comment_success_{clean_handle}.png")
+                                        return True
+                                except:
+                                    continue
+                            
+                            # Alternative check: look for the username in the tweet header
+                            try:
+                                # The user's name/handle appears in specific structure
+                                user_link = tweet.locator(f'a[href="/{clean_handle}"]').first
+                                if await user_link.is_visible(timeout=1000):
+                                    print(f"✅ Found comment by @{clean_handle}!")
+                                    await page.screenshot(path=f"debug_comment_success_{clean_handle}.png")
+                                    return True
+                            except:
+                                pass
+                    
+                    except Exception as e:
+                        continue
+                
+                print(f"⏬ Scrolling through replies ({scroll_attempt + 1}/20)...")
+                await page.mouse.wheel(0, 3000)
+                await page.wait_for_timeout(3000)
+                
+                # Take periodic screenshots
+                if scroll_attempt % 5 == 0:
+                    await page.screenshot(path=f"debug_replies_scroll_{scroll_attempt}_{clean_handle}.png")
+            
+            print("❌ Comment not found in tweet replies")
+        except Exception as e:
+            print(f"⚠️ Reply check failed: {str(e)}")
+        
+        # Strategy 2: Search Twitter for replies from the user
+        print(f"🔍 Strategy 2: Searching for replies via Twitter search...")
+        try:
+            # Search for tweets from user that are replies to the original tweet
+            search_queries = [
+                f"from:{clean_handle} to:{base_url.split('/')[3]}",  # Replies to original poster
+                f"from:{clean_handle} url:{tweet_id}",  # Mentions of the tweet
+            ]
+            
+            for query in search_queries:
+                search_url = f"https://x.com/search?q={query.replace(' ', '%20')}&f=live"
+                print(f"🔎 Search: {search_url}")
+                
+                await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(5000)
+                
+                # Check if any results contain the original tweet ID (indicating it's a reply to that tweet)
+                page_content = await page.content()
+                
+                if tweet_id in page_content:
+                    # Verify by checking individual tweets
+                    tweets = await page.locator('article[data-testid="tweet"]').all()
+                    print(f"📊 Found {len(tweets)} potential replies")
+                    
+                    for tweet in tweets:
+                        try:
+                            tweet_html = await tweet.inner_html()
+                            # Check if this tweet references the original tweet
+                            if tweet_id in tweet_html:
+                                print(f"✅ Found reply via search!")
+                                await page.screenshot(path=f"debug_search_comment_success_{clean_handle}.png")
+                                return True
+                        except:
+                            continue
+        
+        except Exception as e:
+            print(f"⚠️ Search failed: {str(e)}")
+        
+        # Strategy 3: Check user's timeline for replies
+        print(f"📱 Strategy 3: Checking @{clean_handle}'s timeline for replies...")
+        try:
+            timeline_url = f"https://x.com/{clean_handle}/with_replies"  # Shows tweets and replies
+            await page.goto(timeline_url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(5000)
+            
+            # Scroll through timeline
+            for scroll_attempt in range(15):
+                page_content = await page.content()
+                
+                # Check if the tweet ID appears (indicating a reply to that tweet)
+                if tweet_id in page_content:
+                    print(f"✅ Found reply in @{clean_handle}'s timeline!")
+                    await page.screenshot(path=f"debug_timeline_comment_success_{clean_handle}.png")
+                    return True
+                
+                # Also check tweets individually
+                tweets = await page.locator('article[data-testid="tweet"]').all()
+                for tweet in tweets:
+                    try:
+                        tweet_html = await tweet.inner_html()
+                        if tweet_id in tweet_html:
+                            print(f"✅ Found reply in timeline!")
+                            await page.screenshot(path=f"debug_timeline_comment_success_{clean_handle}.png")
+                            return True
+                    except:
+                        continue
+                
+                print(f"⏬ Scrolling timeline ({scroll_attempt + 1}/15)...")
+                await page.mouse.wheel(0, 2500)
+                await page.wait_for_timeout(2500)
+        
+        except Exception as e:
+            print(f"⚠️ Timeline check failed: {str(e)}")
+        
+        print(f"❌ Comment verification failed for @{clean_handle}")
+        await page.screenshot(path=f"debug_comment_fail_{clean_handle}.png")
+        return False
+
+    async def _verify_retweet(self, page, base_url, tweet_id, clean_handle):
+        """Verify retweet - Twitter now shows retweets as tweets, not user lists"""
+        print(f"🤖 Checking retweets for @{clean_handle}")
+        
+        # Strategy 1: Check user's timeline directly (most reliable)
+        print(f"📱 Strategy 1: Checking @{clean_handle}'s timeline...")
+        try:
+            timeline_url = f"https://x.com/{clean_handle}"
+            await page.goto(timeline_url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(5000)
+            
+            # Scroll through timeline looking for the tweet
+            for scroll_attempt in range(15):
+                page_content = await page.content()
+                
+                # Check if the tweet ID appears in the timeline
+                if tweet_id in page_content:
+                    print(f"✅ Found tweet {tweet_id} in @{clean_handle}'s timeline!")
+                    await page.screenshot(path=f"debug_timeline_success_{clean_handle}.png")
+                    return True
+                
+                # Also check for the tweet using locators
+                tweets = await page.locator('article[data-testid="tweet"]').all()
+                for tweet in tweets:
+                    try:
+                        tweet_html = await tweet.inner_html()
+                        if tweet_id in tweet_html:
+                            print(f"✅ Found retweet in timeline!")
+                            await page.screenshot(path=f"debug_timeline_success_{clean_handle}.png")
+                            return True
+                    except:
+                        continue
+                
+                print(f"⏬ Scrolling timeline ({scroll_attempt + 1}/15)...")
+                await page.mouse.wheel(0, 2500)
+                await page.wait_for_timeout(2500)
+            
+            print("❌ Tweet not found in timeline")
+        except Exception as e:
+            print(f"⚠️ Timeline check failed: {str(e)}")
+        
+        # Strategy 2: Search Twitter
+        print(f"🔍 Strategy 2: Searching Twitter...")
+        try:
+            search_query = f"from:{clean_handle} url:{tweet_id}"
+            search_url = f"https://x.com/search?q={search_query.replace(' ', '%20')}&f=live"
+            
+            print(f"🔎 Search: {search_url}")
+            await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(5000)
+            
+            tweets = await page.locator('article[data-testid="tweet"]').count()
+            print(f"📊 Found {tweets} search results")
+            
+            if tweets > 0:
+                print(f"✅ Found retweet via search!")
+                await page.screenshot(path=f"debug_search_success_{clean_handle}.png")
+                return True
+        except Exception as e:
+            print(f"⚠️ Search failed: {str(e)}")
+        
+        print(f"❌ Retweet verification failed for @{clean_handle}")
+        await page.screenshot(path=f"debug_fail_{clean_handle}.png")
+        return False
+
+    async def _verify_follow(self, page, base_url, clean_handle):
+        """Verify follow action"""
+        print(f"🤖 Checking followers for @{clean_handle}")
+        target_url = f"{base_url}/followers"
+        
+        try:
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(5000)
+            
+            # Click "All" tab if present
+            try:
+                all_tab = page.get_by_role("tab", name="All")
+                if await all_tab.is_visible(timeout=3000):
+                    await all_tab.click()
+                    await page.wait_for_timeout(2000)
+            except:
+                pass
+            
+            # Wait for user cells
+            try:
+                await page.wait_for_selector('[data-testid="UserCell"]', timeout=10000)
+            except:
+                print("⚠️ UserCell not detected")
+            
+            # Search for user
+            for attempt in range(20):
+                # Check content
+                page_content = await page.content()
+                if f"@{clean_handle}" in page_content.lower():
+                    # Verify with locators
+                    locators = [
+                        page.locator(f'a[href="/{clean_handle}"]'),
+                        page.locator('[data-testid="UserCell"]').filter(has_text=clean_handle),
+                    ]
+                    
+                    for locator in locators:
+                        try:
+                            if await locator.first.is_visible(timeout=2000):
+                                print(f"✅ Follow verified for @{clean_handle}")
+                                return True
+                        except:
+                            continue
+                
+                # Check cells manually
+                cells = await page.locator('[data-testid="UserCell"]').all()
+                for cell in cells:
+                    try:
+                        cell_text = await cell.inner_text()
+                        if clean_handle.lower() in cell_text.lower():
+                            print(f"✅ Follow verified for @{clean_handle}")
+                            return True
+                    except:
+                        continue
+                
+                print(f"⏬ Scrolling followers ({attempt + 1}/20)...")
+                await page.mouse.wheel(0, 3000)
+                await page.wait_for_timeout(3000)
+            
+            return False
+        except Exception as e:
+            print(f"❌ Follow verification error: {str(e)}")
+            return False
+
+    async def _verify_like(self, page, base_url, clean_handle):
+        """Verify like action"""
+        print(f"🤖 Checking likes for @{clean_handle}")
+        target_url = f"{base_url}/likes"
+        
+        try:
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(5000)
+            
+            # Wait for user cells
+            try:
+                await page.wait_for_selector('[data-testid="UserCell"]', timeout=10000)
+            except:
+                print("⚠️ UserCell not detected")
+            
+            # Search for user
+            for attempt in range(20):
+                page_content = await page.content()
+                if f"@{clean_handle}" in page_content.lower():
+                    locators = [
+                        page.locator(f'a[href="/{clean_handle}"]'),
+                        page.locator('[data-testid="UserCell"]').filter(has_text=clean_handle),
+                    ]
+                    
+                    for locator in locators:
+                        try:
+                            if await locator.first.is_visible(timeout=2000):
+                                print(f"✅ Like verified for @{clean_handle}")
+                                return True
+                        except:
+                            continue
+                
+                cells = await page.locator('[data-testid="UserCell"]').all()
+                for cell in cells:
+                    try:
+                        cell_text = await cell.inner_text()
+                        if clean_handle.lower() in cell_text.lower():
+                            print(f"✅ Like verified for @{clean_handle}")
+                            return True
+                    except:
+                        continue
+                
+                print(f"⏬ Scrolling likes ({attempt + 1}/20)...")
+                await page.mouse.wheel(0, 3000)
+                await page.wait_for_timeout(3000)
+            
+            return False
+        except Exception as e:
+            print(f"❌ Like verification error: {str(e)}")
+            return False
+
+    async def _verify_quote(self, page, proof_url, clean_handle):
+        """Verify if user quoted the tweet with the correct mentions"""
+        print(f"🤖 Checking Quote Tweet for @{clean_handle}")
+        
+        try:
+            # 1. Navigate to the user's submitted proof URL
+            await page.goto(proof_url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(5000)
+
+            # 2. Verify the tweet belongs to the participant
+            # We check if the URL contains their handle or if the page shows their profile
+            if clean_handle not in proof_url.lower():
+                print(f"⚠️ Warning: Submission URL handle does not match participant handle")
+
+            # 3. Locate the main tweet on this page
+            main_tweet = page.locator('article[data-testid="tweet"]').first
+            if await main_tweet.is_visible():
+                tweet_text = await main_tweet.inner_text()
+                tweet_html = await main_tweet.inner_html()
+                
+                # 4. Check for the required mentions (@faucetdrops or custom tag)
+                # We check the text for the mention and the HTML for the link to the profile
+                has_mention = (
+                    "@faucetdrops" in tweet_text.lower() or 
+                    "faucetdrops" in tweet_html.lower()
+                )
+
+                # 5. Check if it's actually a quote (contains the embedded original tweet)
+                # Twitter embeds the quoted tweet in a specific div/card
+                is_quote = await main_tweet.locator('div[role="link"]').count() > 0
+
+                if has_mention and is_quote:
+                    print(f"✅ Quote verified for @{clean_handle} with mentions!")
+                    await page.screenshot(path=f"debug_quote_success_{clean_handle}.png")
+                    return True
+                else:
+                    print(f"❌ Quote check failed. Mention: {has_mention}, IsQuote: {is_quote}")
+            
+            return False
+
+        except Exception as e:
+            print(f"❌ Quote verification error: {str(e)}")
+            return False   
+
+class QuestFinalize(BaseModel):
+    faucetAddress: str 
+    draftId: Optional[str] = None
+    
+    creatorAddress: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    imageUrl: Optional[str] = None
+    
+    startDate: str
+    endDate: str
+    claimWindowHours: int
+    tasks: List[Union[dict, QuestTask]] # Allows dicts or objects
+    
+    stagePassRequirements: Union[dict, StagePassRequirements] # Allows dicts or objects
+    
+    # 👇 ADD THIS MISSING LINE
+    enforceStageRules: bool = False
+
+class Quest(BaseModel):
+    creatorAddress: str
+    title: str
+    description: str
+    isActive: bool = True
+    rewardPool: str
+    startDate: str
+    endDate: str
+    imageUrl: str # New field
+    faucetAddress: str
+    rewardTokenType: str
+    tokenAddress: str
+    tasks: List[QuestTask]
+    stagePassRequirements: StagePassRequirements # New field
+# --- Pydantic Model (No changes needed here) ---
 class RegisterFaucetRequest(BaseModel):
     faucetAddress: str
     ownerAddress: str
@@ -1892,25 +2472,22 @@ class FinalizeRewardsRequest(BaseModel):
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import date
-
 # Locate this definition in your main.py (~ Line 433)
 class QuestOverview(BaseModel):
+    # Matches the TypeScript interface QuestOverview
+    # ADDED Field(alias="snake_case_key") for all snake_case inputs
     faucetAddress: str = Field(alias="faucet_address")
     title: str = Field(alias="title")
     description: Optional[str] = Field(alias="description")
     isActive: bool = Field(alias="is_active")
     rewardPool: str = Field(alias="reward_pool")
     creatorAddress: str = Field(alias="creator_address")
-    startDate: date = Field(alias="start_date")
+    startDate: date = Field(alias="start_date") # Use date type for date fields
     endDate: date = Field(alias="end_date")
-    
-    # FIX: Ensure token_symbol maps to tokenSymbol for the frontend
-    tokenSymbol: Optional[str] = Field(None, alias="token_symbol")
-    imageUrl: Optional[str] = Field(None, alias="image_url")
-    
-    tasksCount: int = Field(default=0)
-    participantsCount: int = Field(default=0)
-    
+    # These fields are computed/fetched separately
+    tasksCount: int = Field(alias="tasksCount") # Computed, keep simple alias
+    participantsCount: int = Field(alias="participantsCount") # Computed, keep simple alias
+   
     model_config = ConfigDict(
         from_attributes=True,
         populate_by_name=True
@@ -2026,6 +2603,10 @@ class ClaimCustomRequest(BaseModel):
     faucetAddress: str
     chainId: int
     divviReferralData: Optional[str] = None
+class ApprovalRequest(BaseModel):
+    submissionId: str
+    status: str
+
 # Enhanced FaucetTask model
 class FaucetTask(BaseModel):
     title: str
@@ -2443,119 +3024,6 @@ async def verify_provide_liquidity_duration(wallet: str, chain: Chain, pool_addr
 # ────────────────────────────────────────────────
 # Mapper
 # ────────────────────────────────────────────────
-# ... [Previous imports remain the same] ...
-
-# ---------------------------------------------------------
-# NEW: Verification Engine Class
-# ---------------------------------------------------------
-class VerificationEngine:
-    def __init__(self):
-        # Approximate block times for age calculation (Seconds)
-        self.BLOCK_TIMES = {
-            1: 12,      # Ethereum
-            42220: 5,   # Celo
-            42161: 0.25, # Arbitrum (variable, but fast)
-            8453: 2,    # Base
-            137: 2.2,   # Polygon
-            1135: 2     # Lisk
-        }
-
-    async def verify(self, chain_id: int, wallet_address: str, task_config: Dict) -> bool:
-        """
-        Master verification router.
-        task_config should contain: { "action": "...", "requirements": { ... } }
-        """
-        try:
-            w3 = await get_web3_instance(chain_id)
-            wallet = w3.to_checksum_address(wallet_address)
-            action = task_config.get("action")
-            reqs = task_config.get("requirements", {}) # JSON field in DB
-
-            print(f"🕵️ Verification Engine: Checking {action} for {wallet} on Chain {chain_id}")
-
-            if action == "hold_token":
-                return await self._verify_token_balance(w3, wallet, reqs)
-            elif action == "hold_nft":
-                return await self._verify_nft_balance(w3, wallet, reqs)
-            elif action == "tx_count":
-                return await self._verify_tx_count(w3, wallet, reqs)
-            elif action == "wallet_age":
-                return await self._verify_wallet_age(w3, wallet, reqs, chain_id)
-            else:
-                print(f"⚠️ Unknown verification action: {action}")
-                return False
-        except Exception as e:
-            print(f"❌ Verification Engine Error: {str(e)}")
-            return False
-
-    async def _verify_token_balance(self, w3: Web3, wallet: str, reqs: Dict) -> bool:
-        token_address = reqs.get("tokenAddress")
-        min_amount = float(reqs.get("minAmount", 0))
-        
-        # Native Token Check (if address is None or Zero)
-        if not token_address or token_address == ZeroAddress:
-            wei_bal = w3.eth.get_balance(wallet)
-            eth_bal = float(w3.from_wei(wei_bal, 'ether'))
-            print(f"💰 Native Balance: {eth_bal} (Req: {min_amount})")
-            return eth_bal >= min_amount
-
-        # ERC20 Check
-        contract = w3.eth.contract(address=w3.to_checksum_address(token_address), abi=ERC20_ABI)
-        wei_bal = contract.functions.balanceOf(wallet).call()
-        decimals = contract.functions.decimals().call()
-        token_bal = wei_bal / (10 ** decimals)
-        
-        print(f"💰 Token Balance: {token_bal} (Req: {min_amount})")
-        return token_bal >= min_amount
-
-    async def _verify_nft_balance(self, w3: Web3, wallet: str, reqs: Dict) -> bool:
-        # Generic ERC721 `balanceOf` check
-        nft_address = reqs.get("contractAddress")
-        if not nft_address: return False
-        
-        # Minimal ABI for ERC721 balanceOf
-        abi = [{"constant":True,"inputs":[{"name":"owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"","type":"uint256"}],"type":"function"}]
-        contract = w3.eth.contract(address=w3.to_checksum_address(nft_address), abi=abi)
-        
-        balance = contract.functions.balanceOf(wallet).call()
-        min_held = int(reqs.get("minAmount", 1))
-        
-        print(f"🖼️ NFT Balance: {balance} (Req: {min_held})")
-        return balance >= min_held
-
-    async def _verify_tx_count(self, w3: Web3, wallet: str, reqs: Dict) -> bool:
-        min_count = int(reqs.get("minTxCount", 1))
-        nonce = w3.eth.get_transaction_count(wallet)
-        
-        print(f"🔢 Tx Count: {nonce} (Req: {min_count})")
-        return nonce >= min_count
-
-    async def _verify_wallet_age(self, w3: Web3, wallet: str, reqs: Dict, chain_id: int) -> bool:
-        # Check if wallet was active N days ago by checking nonce at historical block
-        min_days = int(reqs.get("minDaysOld", 0))
-        if min_days <= 0: return True
-
-        current_block = w3.eth.block_number
-        block_time = self.BLOCK_TIMES.get(chain_id, 2) # Default 2s
-        
-        blocks_per_day = (24 * 60 * 60) / block_time
-        blocks_ago = int(blocks_per_day * min_days)
-        target_block = max(0, current_block - blocks_ago)
-
-        print(f"📅 Checking activity at block {target_block} (~{min_days} days ago)")
-        
-        try:
-            # If nonce > 0 at that past block, account was already active
-            past_nonce = w3.eth.get_transaction_count(wallet, block_identifier=target_block)
-            print(f"📅 Nonce {min_days} days ago: {past_nonce}")
-            return past_nonce > 0
-        except Exception as e:
-            print(f"⚠️ Could not fetch historical state: {e}")
-            return False # Fail safe
-
-# Instantiate globally
-verification_engine = VerificationEngine()
-
 VERIFIER_MAP = {
     "hold_balance":             verify_hold_balance,
     "hold_nft":                 verify_hold_nft,
@@ -2767,6 +3235,7 @@ async def process_auto_approval(submission_id: str, faucet_address: str, wallet_
         print(f"❌ Auto-processing failed: {str(e)}")
         import traceback
         traceback.print_exc()
+
 def generate_slug(name: str):
     if not name:
         return "faucet"
@@ -4656,6 +5125,23 @@ async def get_user_profile(wallet_address: str) -> Optional[UserProfile]:
         return None
     
 
+async def verify_telegram(self, channel_url, participant_username):
+        async with async_playwright() as p:
+            browser, context = await self._setup_browser(p)
+            page = await context.new_page()
+            try:
+                await page.goto(channel_url)
+                return participant_username.lower() in await page.content()
+            except: return False
+            finally: await browser.close()
+
+async def verify_discord(self, message_url, participant_tag):
+        async with async_playwright() as p:
+            browser, context = await self._setup_browser(p)
+            page = await context.new_page()
+            await page.goto(message_url)
+            return participant_tag in await page.content()
+
 async def generate_new_drop_code_only(faucet_address: str) -> str:
     """
     Generate a new drop code and update it in the database with smart timing logic.
@@ -5587,47 +6073,68 @@ async def upload_faucet_image(file: UploadFile = File(...)):
 
 @app.post("/api/quests", tags=["Quest Management"])
 async def save_quest(request: Quest):
+    """
+    Saves the Quest configuration to the database.
+    Handles image_url and stage_pass_requirements fields using Supabase.
+    """
     try:
         if not Web3.is_address(request.creatorAddress) or not Web3.is_address(request.faucetAddress):
-            raise HTTPException(status_code=400, detail="Invalid address format.")
+            raise HTTPException(status_code=400, detail="Invalid address format for creator or faucet.")
         
         faucet_address_cs = Web3.to_checksum_address(request.faucetAddress)
+        
         quest_data = request.dict()
         
-        # Extract complex fields
+        # 1. Extract and separate complex fields
         tasks_to_store = quest_data.pop("tasks")
         stage_reqs_to_store = quest_data.pop("stagePassRequirements")
 
-        # FIX: Pydantic internalizes keys as snake_case. Pop using snake_case names.
+        # 2. Map remaining fields to snake_case column names for the 'quests' table
         quest_data_db = {
             "faucet_address": faucet_address_cs,
-            "creator_address": quest_data.pop("creator_address"),
+            "creator_address": quest_data.pop("creatorAddress"),
             "title": quest_data.pop("title"),
             "description": quest_data.pop("description"),
-            "is_active": quest_data.pop("is_active"),
-            "reward_pool": quest_data.pop("reward_pool"),
-            "start_date": quest_data.pop("start_date"),
-            "end_date": quest_data.pop("end_date"),
-            "reward_token_type": quest_data.pop("reward_token_type"),
-            "token_address": quest_data.pop("token_address"),
-            "token_symbol": request.token_symbol,
-            "image_url": quest_data.pop("image_url"),
-            "stage_pass_requirements": stage_reqs_to_store,
+            "is_active": quest_data.pop("isActive"),
+            "reward_pool": quest_data.pop("rewardPool"),
+            "start_date": quest_data.pop("startDate"),
+            "end_date": quest_data.pop("endDate"),
+            "reward_token_type": quest_data.pop("rewardTokenType"),
+            "token_address": quest_data.pop("tokenAddress"),
+            "token_symbol": quest_data.pop("tokenSymbol", None),
+            # New/Updated fields:
+            "image_url": quest_data.pop("imageUrl"), 
+            "stage_pass_requirements": stage_reqs_to_store, # Stored as JSON/Dict
+            
             "created_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat()
         }
 
-        response = supabase.table("quests").upsert(quest_data_db, on_conflict="faucet_address").execute()
+        # 3. Store main quest data in the 'quests' table
+        response = supabase.table("quests").upsert(
+            quest_data_db,
+            on_conflict="faucet_address"
+        ).execute()
         if not response.data:
-            raise HTTPException(status_code=500, detail="Failed to save quest metadata.")
+            raise HTTPException(status_code=500, detail="Failed to save core quest metadata to Supabase.")
         
+        # 4. Store tasks data in the 'faucet_tasks' table
         await store_faucet_tasks(faucet_address_cs, tasks_to_store, quest_data_db["creator_address"])
         
-        return {"success": True, "message": "Quest saved.", "faucetAddress": faucet_address_cs}
+        print(f"✅ Saved Quest: '{request.title}'. Faucet: {faucet_address_cs}")
+        
+        return {
+            "success": True,
+            "message": "Quest and Faucet metadata saved successfully.",
+            "faucetAddress": faucet_address_cs
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-    
+        print(f"💥 Error saving quest: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to save quest: {str(e)}")
+
 # --- GET QUEST BY ADDRESS (Updated to fetch new fields) ---
 
 @app.get("/api/quests/{faucetAddress}", tags=["Quest Management"])
@@ -6034,24 +6541,23 @@ async def save_quest_draft(draft: QuestDraft):
         faucet_address_val = draft.faucetAddress 
         creator_address_cs = Web3.to_checksum_address(draft.creatorAddress)
 
-        # --- FIX START ---
-        # Don't generate the public slug yet. Use a temporary draft slug.
-        # This keeps the "real" name available for the final version.
-        quest_slug = f"draft-{faucet_address_val}" 
-        # --- FIX END ---
+        # 1. Generate slug to satisfy NOT-NULL constraint
+        # We use a 4-character UUID suffix to ensure drafts don't collide
+        base_slug = generate_slug(draft.title)
+        quest_slug = f"{base_slug}-{str(uuid.uuid4())[:4]}"
 
         # 2. Map fields carefully to match Supabase snake_case columns
         draft_data_db = {
             "faucet_address": draft.faucetAddress,
             "creator_address": creator_address_cs,
             "title": draft.title,
-            "slug": quest_slug, # Uses the temp draft slug
+            "slug": quest_slug,
             "description": draft.description,
             "image_url": draft.imageUrl,
             "reward_pool": draft.rewardPool,
             "reward_token_type": draft.rewardTokenType,
             "token_address": draft.tokenAddress,
-            "token_symbol": draft.token_symbol, 
+            "token_symbol": draft.token_symbol, # Accessing the snake_case attribute
             "distribution_config": draft.distributionConfig,
             "is_draft": True,
             "updated_at": datetime.now().isoformat()
@@ -6075,7 +6581,7 @@ async def save_quest_draft(draft: QuestDraft):
     except Exception as e:
         print(f"Error saving draft: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
 @app.delete("/api/quests/draft/{draftId}", tags=["Quest Management"])
 async def delete_quest_draft(draftId: str):
     """
@@ -6118,10 +6624,14 @@ async def finalize_quest(finalize: QuestFinalize):
         
         # 1. FETCH DATA FROM DRAFT
         draft_data = {}
+        existing_slug = None
+        
         if finalize.draftId:
             draft_res = supabase.table("quests").select("*").eq("faucet_address", finalize.draftId).execute()
             if draft_res.data:
                 draft_data = draft_res.data[0]
+                existing_slug = draft_data.get("slug")
+                print(f"📦 Found draft data. Existing slug: {existing_slug}")
 
         # 2. DETERMINE FINAL CREATOR
         final_creator = finalize.creatorAddress or draft_data.get("creator_address")
@@ -6135,42 +6645,29 @@ async def finalize_quest(finalize: QuestFinalize):
             if hasattr(obj, 'dict'): return obj.dict()
             return obj 
 
+        # 4. PREPARE DATA
         stage_reqs = to_dict(finalize.stagePassRequirements)
         clean_tasks = [to_dict(t) for t in finalize.tasks]
 
-        # 4. CLEANUP DRAFT
+        # 5. THE CRITICAL FIX: Delete the draft BEFORE upserting the live quest
+        # This prevents the "Duplicate Slug" unique constraint error.
         if finalize.draftId and finalize.draftId.lower() != finalize.faucetAddress.lower():
+            print(f"🗑️ Deleting draft {finalize.draftId} to free up slug '{existing_slug}'")
             supabase.table("quests").delete().eq("faucet_address", finalize.draftId).execute()
             supabase.table("faucet_tasks").delete().eq("faucet_address", finalize.draftId).execute()
-
-        # 5. GENERATE SLUG
-        existing_slug = draft_data.get("slug")
-        final_title = finalize.title or draft_data.get("title") or "quest"
-        
-        # If we have a draft slug, reuse it (cleaning off 'draft-' prefix if present manually, 
-        # though usually we want to keep the slug consistent if it was already shared).
-        # OR generate new unique slug
-        if existing_slug and not existing_slug.startswith('draft-'):
-             final_slug = existing_slug
-        else:
-             base_slug = generate_slug(final_title)
-             final_slug = f"{base_slug}-{real_address_cs[-4:].lower()}"
 
         # 6. UPSERT QUESTS TABLE
         final_quest_data = {
             "faucet_address": real_address_cs,
             "creator_address": final_creator,
-            "title": final_title,
-            "slug": final_slug,
+            "title": finalize.title or draft_data.get("title"),
+            "slug": existing_slug or generate_slug(finalize.title or "quest"), # Use slug from draft
             "description": finalize.description or draft_data.get("description"),
             "image_url": finalize.imageUrl or draft_data.get("image_url"),
             "reward_pool": draft_data.get("reward_pool"),
             "reward_token_type": draft_data.get("reward_token_type"),
             "token_address": draft_data.get("token_address"),
-            
-            # 👇 FIX: PRIORITIZE PAYLOAD SYMBOL, FALLBACK TO DRAFT
-            "token_symbol": finalize.token_symbol or draft_data.get("token_symbol"), 
-            
+            "token_symbol": draft_data.get("token_symbol"), # Fixed: ensures symbol saves
             "start_date": finalize.startDate,
             "end_date": finalize.endDate,
             "claim_window_hours": finalize.claimWindowHours,
@@ -6181,9 +6678,10 @@ async def finalize_quest(finalize: QuestFinalize):
             "updated_at": datetime.now().isoformat()
         }
 
+        # Now this will succeed because the old slug was deleted in step 5
         supabase.table("quests").upsert(final_quest_data, on_conflict="faucet_address").execute()
 
-        # 7. UPSERT FAUCET_TASKS
+        # 7. UPSERT FAUCET_TASKS TABLE
         tasks_data = {
             "faucet_address": real_address_cs,
             "created_by": final_creator,
@@ -6192,10 +6690,12 @@ async def finalize_quest(finalize: QuestFinalize):
         }
         supabase.table("faucet_tasks").upsert(tasks_data, on_conflict="faucet_address").execute()
 
-        return {"success": True, "message": "Quest finalized!", "slug": final_slug}
+        return {"success": True, "message": "Quest finalized and live!", "slug": existing_slug}
 
     except Exception as e:
         print(f"❌ Error finalizing quest: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- OPTIONAL: List drafts for user ---
@@ -6829,7 +7329,30 @@ async def admin_verify_task(submission_id: str, action: str): # action = "approv
         supabase.table("task_completions").update({"status": "rejected"}).eq("id", submission_id).execute()
         return {"status": "rejected", "message": "Proof denied"}
         
-  
+@app.post("/api/bot/verify-social")
+async def bot_verify_social(request: BotVerifyRequest):
+    engine = SocialVerificationEngine(headless=True)
+    
+    try:
+        # Note: For 'quote', the proofUrl should be the link the user submitted, 
+        # not the original quest tweet.
+        is_verified = await engine.verify_twitter(
+            task_type=request.taskType,
+            proof_url=request.proofUrl,
+            participant_handle=request.handle
+        )
+
+        if is_verified:
+            await process_auto_approval(request.submissionId, request.faucetAddress, request.walletAddress)
+            return {"verified": True, "message": "Verification successful!"}
+        else:
+            supabase.table("submissions").delete().eq("submission_id", request.submissionId).execute()
+            return {"verified": False, "message": "Verification failed. Ensure you quoted with @faucetdrops."}
+            
+    except Exception as e:
+        supabase.table("submissions").delete().eq("submission_id", request.submissionId).execute()
+        raise HTTPException(status_code=500, detail=str(e))
+    
 @app.post("/claim-custom")
 async def claim_custom(request: ClaimCustomRequest):
     """Endpoint to claim tokens from custom faucets."""
@@ -7873,14 +8396,46 @@ async def submit_task(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+@app.post("/api/admin/approve-submission")
+async def admin_approve_submission(req: ApprovalRequest):
+    """
+    Called by the external Verifier Service when a task is passed.
+    """
+    # In production, check for a shared SECRET_KEY header here for security!
     
+    if req.status == "approved":
+        # 1. Fetch submission details
+        sub_res = supabase.table("submissions").select("*").eq("submission_id", req.submissionId).execute()
+        if not sub_res.data:
+            return {"success": False, "message": "Submission not found"}
+            
+        sub = sub_res.data[0]
+        
+        # 2. Call your existing auto-approval logic
+        await process_auto_approval(
+            req.submissionId, 
+            sub['faucet_address'], 
+            sub['wallet_address']
+        )
+        
+        return {"success": True}
+    
+    return {"success": False}
+     
 @app.put("/api/quests/{faucet_address}/submissions/{submission_id}")
-async def update_submission(faucet_address: str, submission_id: str, update: SubmissionUpdate):
+async def update_submission(
+    faucet_address: str,
+    submission_id: str,
+    update: SubmissionUpdate
+):
     try:
         faucet_checksum = Web3.to_checksum_address(faucet_address)
+
+        # 1. Update status in 'submissions' table
+        now = datetime.utcnow().isoformat()
         sub_update = supabase.table("submissions").update({
             "status": update.status, 
-            "reviewed_at": datetime.utcnow().isoformat()
+            "reviewed_at": now
         }).eq("submission_id", submission_id).execute()
 
         if not sub_update.data:
@@ -7890,45 +8445,64 @@ async def update_submission(faucet_address: str, submission_id: str, update: Sub
         wallet_checksum = submission['wallet_address']
         task_id = submission['task_id']
 
-        # LOGIC FOR APPROVAL: AWARD POINTS
+        # 2. Logic for Approval
         if update.status == "approved":
+            # A. Fetch Context (Requirements and Task Data)
             stage_reqs, tasks = await get_quest_context(faucet_checksum)
+            
+            if not tasks:
+                raise HTTPException(status_code=500, detail="Quest tasks configuration not found")
+
+            # Find the specific task to get points and stage
             task = next((t for t in tasks if t['id'] == task_id), None)
             
             if task:
                 points_to_add = int(task.get('points', 0))
                 task_stage = task.get('stage', 'Beginner')
 
-                # A. Update Detailed User Progress
-                prog_res = supabase.table("user_progress").select("*").eq("wallet_address", wallet_checksum).eq("faucet_address", faucet_checksum).execute()
-                if prog_res.data:
-                    curr_prog = prog_res.data[0]
-                    new_total = curr_prog['total_points'] + points_to_add
-                    current_stage_points = curr_prog['stage_points'] or {}
-                    current_stage_points[task_stage] = current_stage_points.get(task_stage, 0) + points_to_add
-                    
-                    completed_list = curr_prog['completed_tasks'] or []
-                    if task_id not in completed_list: completed_list.append(task_id)
-                    new_stage_name = calculate_current_stage(current_stage_points, stage_reqs)
+                # B. Fetch Current User Progress
+                prog_res = supabase.table("user_progress")\
+                    .select("*")\
+                    .eq("wallet_address", wallet_checksum)\
+                    .eq("faucet_address", faucet_checksum)\
+                    .execute()
+                
+                if not prog_res.data:
+                    raise HTTPException(status_code=404, detail="User progress not found")
+                
+                curr_prog = prog_res.data[0]
+                
+                # C. Calculate New Values
+                # Update Total Points
+                new_total = curr_prog['total_points'] + points_to_add
+                
+                # Update Stage Points (JSONB)
+                current_stage_points = curr_prog['stage_points'] or {}
+                # Ensure keys exist
+                if task_stage not in current_stage_points:
+                    current_stage_points[task_stage] = 0
+                current_stage_points[task_stage] += points_to_add
+                
+                # Update Completed Tasks (Array)
+                completed_list = curr_prog['completed_tasks'] or []
+                if task_id not in completed_list:
+                    completed_list.append(task_id)
 
-                    supabase.table("user_progress").update({
-                        "total_points": new_total,
-                        "stage_points": current_stage_points,
-                        "completed_tasks": completed_list,
-                        "current_stage": new_stage_name
-                    }).eq("wallet_address", wallet_checksum).eq("faucet_address", faucet_checksum).execute()
+                # Calculate New Stage Level
+                new_stage_name = calculate_current_stage(current_stage_points, stage_reqs) if stage_reqs else curr_prog['current_stage']
 
-                # B. UPDATE LEADERBOARD (quest_participants table)
-                # This ensures the new points show up for everyone on the rank list
-                part_res = supabase.table("quest_participants").select("points").eq("quest_address", faucet_checksum).eq("wallet_address", wallet_checksum).execute()
-                if part_res.data:
-                    current_points = part_res.data[0].get('points', 0)
-                    supabase.table("quest_participants").update({
-                        "points": current_points + points_to_add
-                    }).eq("quest_address", faucet_checksum).eq("wallet_address", wallet_checksum).execute()
+                # D. Commit Updates to DB
+                supabase.table("user_progress").update({
+                    "total_points": new_total,
+                    "stage_points": current_stage_points,
+                    "completed_tasks": completed_list,
+                    "current_stage": new_stage_name
+                }).eq("wallet_address", wallet_checksum).eq("faucet_address", faucet_checksum).execute()
 
-        return {"success": True, "message": f"Submission {update.status} processed and points awarded."}
+        return {"success": True, "message": f"Submission {update.status}"}
+
     except Exception as e:
+        print(f"Update submission error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/quests/{faucet_address}/submissions/pending")
