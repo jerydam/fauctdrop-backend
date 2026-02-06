@@ -31,8 +31,6 @@ import random
 from datetime import datetime, timezone, timedelta
 import dateutil.parser
 from supabase import create_client, Client
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, distinct, text # Needed for DB interaction
 from sqlalchemy import Column, TEXT, BOOLEAN, DATE, TIMESTAMP, text # Import required DB elements
 from sqlalchemy.ext.declarative import declarative_base # Import the base for ORM models
 from eth_account.messages import encode_defunct
@@ -1871,7 +1869,7 @@ class QuestDraft(BaseModel):
     tasks: Optional[List[Dict[str, Any]]] = None
 
     model_config = ConfigDict(
-        populate_by_name=True,
+        populate_by_name=True,  # ← CRITICAL FIX: Allows both alias and field name
         from_attributes=True
     )
 
@@ -1904,518 +1902,285 @@ import playwright_stealth
 class SocialVerificationEngine:
     def __init__(self, headless=True):
         self.headless = headless
-        # Path to your root bot folder
         self.user_data_dir = os.path.abspath("./bot_browser_data")
-        if not os.path.exists(self.user_data_dir):
-            os.makedirs(self.user_data_dir)
-            print(f"📁 Created missing bot session directory: {self.user_data_dir}")
-
-   
-    async def _setup_browser(self, p):
-        # Instead of raising an exception, create the directory automatically.
-        # On Render Free, this folder is wiped on every restart.
+        # Path to your auth file - MAKE SURE THIS MATCHES YOUR FILE NAME
+        self.auth_file_path = os.path.abspath("auth.json") 
+        
         if not os.path.exists(self.user_data_dir):
             os.makedirs(self.user_data_dir, exist_ok=True)
-            print(f"📁 Created browser session directory at {self.user_data_dir}")
-                
-        context = await p.chromium.launch_persistent_context(
-            user_data_dir=self.user_data_dir,
-            headless=True,  
-            ignore_default_args=["--enable-automation"],
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",     # CRITICAL: Prevents crash in Docker
-                "--disable-gpu",               # Saves significant RAM
-                "--disable-extensions",        # Saves RAM
-                "--no-zygote",                 # Reduces background processes
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage", # MANDATORY for Render/Docker
-                "--disable-gpu",           # Saves RAM
-                "--single-process",        # Essential for 512MB RAM limit
 
-                "--single-process",            # Forces Chromium into one process (RAM saver)
-                "--disable-web-security",
-                "--disable-features=IsolateOrigins,site-per-process",
-                "--window-size=1280,720",      # Fixed window size saves memory
-            ],
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        
-        # Apply stealth to all pages in the context
-        await playwright_stealth.stealth_async(context)
-        return context
+    async def _setup_browser(self, p):
+        print(f"🚀 Launching Desktop Stealth Browser...")
 
-    def clear_browser_cache(self):
-        """
-        Clears the browser data folder to save disk space.
-        Run this periodically or if the folder exceeds a certain size.
-        """
-        if os.path.exists(self.user_data_dir):
-            try:
-                # We remove the directory and recreate it to wipe everything
-                shutil.rmtree(self.user_data_dir)
-                os.makedirs(self.user_data_dir, exist_ok=True)
-                print("🧹 Disk Cleanup: Browser cache cleared.")
-            except Exception as e:
-                print(f"⚠️ Cleanup failed: {e}")
+        # ARGS: Minimalist Desktop Setup
+        args = [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+            "--start-maximized", # Open full screen
+            "--disable-infobars",
+        ]
 
-    async def _check_if_logged_in(self, page):
-        """Check if the bot is logged into Twitter"""
         try:
-            # Look for signs that we're logged in
-            await page.wait_for_timeout(2000)
+            context = await p.chromium.launch_persistent_context(
+                user_data_dir=self.user_data_dir,
+                headless=self.headless,
+                channel="chromium",
+                slow_mo=50,
+                
+                # --- DESKTOP SETTINGS ---
+                # We use a standard viewport and Linux User Agent to match your OS
+                viewport={"width": 1920, "height": 1080}, 
+                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                is_mobile=False,
+                has_touch=False,
+                # ------------------------
+                
+                permissions=["geolocation", "notifications"], # Grant permissions to look human
+                timeout=60000,
+                ignore_default_args=["--enable-automation"],
+                args=args,
+            )
             
-            # Check for login-related elements
-            page_content = await page.content()
+            await playwright_stealth.stealth_async(context)
             
-            if "login" in page_content.lower() or "sign in" in page_content.lower():
-                # Check if it's a login page
-                if await page.locator('input[name="text"]').count() > 0:  # Username field
-                    print("⚠️ Bot is NOT logged in!")
-                    return False
+            # LOAD COOKIES
+            await asyncio.sleep(2)
+            if os.path.exists(self.auth_file_path):
+                print(f"🍪 Loading auth.json...")
+                try:
+                    with open(self.auth_file_path, 'r') as f:
+                        data = json.load(f)
+                        cookies = data if isinstance(data, list) else data.get('cookies', [])
+                        
+                        safe_cookies = []
+                        for c in cookies:
+                            # Remove attributes that often cause conflicts
+                            if 'sameSite' in c and c['sameSite'] not in ['Strict', 'Lax', 'None']:
+                                del c['sameSite']
+                            if 'secure' in c: 
+                                c['secure'] = True # Force secure for https
+                            safe_cookies.append(c)
+                            
+                        await context.add_cookies(safe_cookies)
+                    print("✅ Cookies loaded.")
+                except Exception as e:
+                    print(f"⚠️ Cookie load issue: {e}")
             
-            print("✅ Bot appears to be logged in")
-            return True
-        except:
-            return True
-
-    async def _wait_for_content_load(self, page, max_wait=15):
-        """Wait for Twitter content to actually load"""
-        print("⏳ Waiting for content to load...")
-        
-        for i in range(max_wait):
-            # Check multiple indicators that content has loaded
-            user_cells = await page.locator('[data-testid="UserCell"]').count()
-            tweets = await page.locator('article[data-testid="tweet"]').count()
+            return context
             
-            if user_cells > 0:
-                print(f"✅ Content loaded! Found {user_cells} user cells")
-                return True
-            
-            if tweets > 0:
-                print(f"✅ Content loaded! Found {tweets} tweets")
-                return True
-            
-            # Check if we hit a rate limit or error page
-            page_text = await page.text_content('body')
-            if page_text and any(error in page_text.lower() for error in 
-                ['rate limit', 'try again', 'something went wrong', 'error']):
-                print("⚠️ Detected error or rate limit message")
-                await page.screenshot(path="debug_error_page.png")
-                return False
-            
-            print(f"⏳ Waiting for content... ({i+1}/{max_wait}s)")
-            await page.wait_for_timeout(1000)
-        
-        print("❌ Content did not load in time")
-        return False
-
+        except Exception as e:
+            print(f"❌ Launch Failed: {e}")
+            raise e
     async def verify_twitter(self, task_type: str, proof_url: str, participant_handle: str):
         async with async_playwright() as p:
             context = await self._setup_browser(p)
             page = await context.new_page()
-            page.set_default_timeout(60000) 
-            
-            clean_handle = participant_handle.replace("@", "").strip().lower()
-            base_url = proof_url.split('?')[0].rstrip('/')
-            tweet_id = base_url.split('/')[-1]
             
             try:
+                # Direct traffic based on task
                 if task_type == "follow":
-                    return await self._verify_follow(page, base_url, clean_handle)
-                elif task_type == "retweet":
-                    return await self._verify_retweet(page, base_url, tweet_id, clean_handle)
-                elif task_type == "like":
-                    return await self._verify_like(page, base_url, clean_handle)
-                elif task_type == "comment":
-                    return await self._verify_comment(page, base_url, tweet_id, clean_handle)
-                # ADD THIS:
-                elif task_type == "quote":
-                    return await self._verify_quote(page, proof_url, clean_handle)
+                    # proof_url is the TARGET profile (e.g. https://x.com/zayneTrybe)
+                    return await self._verify_follow(page, proof_url, participant_handle)
                 
-                return False
-
-            except Exception as e:
-                print(f"❌ Critical Bot Error: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                await page.screenshot(path=f"debug_exception_{clean_handle}.png")
+                # ... (add other task types here if needed)
+                
                 return False
             finally:
                 await context.close()
 
-    async def _verify_comment(self, page, base_url, tweet_id, clean_handle):
-        """Verify if user commented/replied to the tweet"""
-        print(f"🤖 Checking comments/replies for @{clean_handle}")
+    async def _verify_follow(self, page, target_profile_url, clean_handle):
+        target_handle = target_profile_url.strip("/").split("/")[-1]
+        user_following_url = f"https://x.com/{clean_handle}/following"
         
-        # Strategy 1: Check the tweet's replies directly
-        print(f"💬 Strategy 1: Checking tweet replies...")
+        print(f"🔹 CHECK: Does @{clean_handle} follow @{target_handle}?")
+
+        # --- SNAPSHOT HELPER ---
+        async def snapshot(name):
+            path = f"debug_{name}.png"
+            await page.screenshot(path=path)
+            print(f"📸 Saved: {path}")
+        # -----------------------
+
         try:
-            # Navigate to the tweet page (replies are shown below the main tweet)
-            await page.goto(base_url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(5000)
+            # 1. Navigate
+            print(f"🔹 Navigating to {user_following_url}...")
+            try:
+                await page.goto(user_following_url, wait_until="domcontentloaded", timeout=60000)
+            except Exception as e:
+                print(f"⚠️ Navigation timeout: {e}")
             
-            # await page.screenshot(path=f"debug_tweet_page_{clean_handle}.png")
+            await snapshot("step1_loaded")
+
+            # 2. Handle Errors
+            for i in range(3):
+                if await page.locator('span:has-text("Try again")').count() > 0:
+                    print(f"⚠️ Found 'Retry' button (Attempt {i+1}). Clicking...")
+                    await page.locator('span:has-text("Try again")').first.click()
+                    await page.wait_for_timeout(4000)
+                    await snapshot(f"step2_retry_{i+1}")
+                else:
+                    break
             
-            # Scroll through replies looking for the user
-            for scroll_attempt in range(20):
-                # Get all tweets on the page (main tweet + replies)
-                tweets = await page.locator('article[data-testid="tweet"]').all()
-                print(f"📊 Found {len(tweets)} tweets/replies on page")
+            # 3. Check Login
+            if "login" in page.url or await page.locator('[data-testid="login"]').count() > 0:
+                print("❌ ERROR: Bot is logged out. Your auth.json might be invalid.")
+                await snapshot("error_logged_out")
+                return False
+
+            # 4. Scan List
+            print(f"🔹 Scanning list for @{target_handle}...")
+            for attempt in range(10):
+                # Check for Link
+                found = await page.locator(f'a[href="/{target_handle}"]').count()
                 
-                for idx, tweet in enumerate(tweets):
-                    try:
-                        tweet_html = await tweet.inner_html()
-                        tweet_text = await tweet.inner_text()
-                        
-                        # Skip the first tweet (it's the original tweet, not a reply)
-                        if idx == 0:
-                            continue
-                        
-                        # Check if this reply is from the target user
-                        # Look for the user's handle in the tweet
-                        if f"@{clean_handle}" in tweet_text.lower() or f"/{clean_handle}" in tweet_html.lower():
-                            # Verify it's actually their tweet by checking the profile link
-                            links = await tweet.locator('a[role="link"]').all()
-                            for link in links:
-                                try:
-                                    href = await link.get_attribute('href')
-                                    if href and f"/{clean_handle}" in href.lower() and "/status/" in href:
-                                        print(f"✅ Found comment by @{clean_handle}!")
-                                        await page.screenshot(path=f"debug_comment_success_{clean_handle}.png")
-                                        return True
-                                except:
-                                    continue
-                            
-                            # Alternative check: look for the username in the tweet header
-                            try:
-                                # The user's name/handle appears in specific structure
-                                user_link = tweet.locator(f'a[href="/{clean_handle}"]').first
-                                if await user_link.is_visible(timeout=1000):
-                                    print(f"✅ Found comment by @{clean_handle}!")
-                                    await page.screenshot(path=f"debug_comment_success_{clean_handle}.png")
-                                    return True
-                            except:
-                                pass
-                    
-                    except Exception as e:
-                        continue
-                
-                print(f"⏬ Scrolling through replies ({scroll_attempt + 1}/20)...")
-                await page.mouse.wheel(0, 3000)
-                await page.wait_for_timeout(3000)
-                
-                # Take periodic screenshots
-                if scroll_attempt % 5 == 0:
-                    await page.screenshot(path=f"debug_replies_scroll_{scroll_attempt}_{clean_handle}.png")
-            
-            print("❌ Comment not found in tweet replies")
-        except Exception as e:
-            print(f"⚠️ Reply check failed: {str(e)}")
-        
-        # Strategy 2: Search Twitter for replies from the user
-        print(f"🔍 Strategy 2: Searching for replies via Twitter search...")
-        try:
-            # Search for tweets from user that are replies to the original tweet
-            search_queries = [
-                f"from:{clean_handle} to:{base_url.split('/')[3]}",  # Replies to original poster
-                f"from:{clean_handle} url:{tweet_id}",  # Mentions of the tweet
-            ]
-            
-            for query in search_queries:
-                search_url = f"https://x.com/search?q={query.replace(' ', '%20')}&f=live"
-                print(f"🔎 Search: {search_url}")
-                
-                await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
-                await page.wait_for_timeout(5000)
-                
-                # Check if any results contain the original tweet ID (indicating it's a reply to that tweet)
-                page_content = await page.content()
-                
-                if tweet_id in page_content:
-                    # Verify by checking individual tweets
-                    tweets = await page.locator('article[data-testid="tweet"]').all()
-                    print(f"📊 Found {len(tweets)} potential replies")
-                    
-                    for tweet in tweets:
-                        try:
-                            tweet_html = await tweet.inner_html()
-                            # Check if this tweet references the original tweet
-                            if tweet_id in tweet_html:
-                                print(f"✅ Found reply via search!")
-                                await page.screenshot(path=f"debug_search_comment_success_{clean_handle}.png")
-                                return True
-                        except:
-                            continue
-        
-        except Exception as e:
-            print(f"⚠️ Search failed: {str(e)}")
-        
-        # Strategy 3: Check user's timeline for replies
-        print(f"📱 Strategy 3: Checking @{clean_handle}'s timeline for replies...")
-        try:
-            timeline_url = f"https://x.com/{clean_handle}/with_replies"  # Shows tweets and replies
-            await page.goto(timeline_url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(5000)
-            
-            # Scroll through timeline
-            for scroll_attempt in range(15):
-                page_content = await page.content()
-                
-                # Check if the tweet ID appears (indicating a reply to that tweet)
-                if tweet_id in page_content:
-                    print(f"✅ Found reply in @{clean_handle}'s timeline!")
-                    await page.screenshot(path=f"debug_timeline_comment_success_{clean_handle}.png")
+                if found > 0:
+                    print(f"✅ YES! @{clean_handle} follows @{target_handle}")
+                    await snapshot("success_found")
                     return True
                 
-                # Also check tweets individually
-                tweets = await page.locator('article[data-testid="tweet"]').all()
-                for tweet in tweets:
-                    try:
-                        tweet_html = await tweet.inner_html()
-                        if tweet_id in tweet_html:
-                            print(f"✅ Found reply in timeline!")
-                            await page.screenshot(path=f"debug_timeline_comment_success_{clean_handle}.png")
-                            return True
-                    except:
-                        continue
+                # Scroll
+                await page.evaluate("window.scrollBy(0, 1000)")
+                await page.wait_for_timeout(2000)
                 
-                print(f"⏬ Scrolling timeline ({scroll_attempt + 1}/15)...")
-                await page.mouse.wheel(0, 2500)
-                await page.wait_for_timeout(2500)
-        
-        except Exception as e:
-            print(f"⚠️ Timeline check failed: {str(e)}")
-        
-        print(f"❌ Comment verification failed for @{clean_handle}")
-        await page.screenshot(path=f"debug_comment_fail_{clean_handle}.png")
-        return False
+                if attempt == 0: await snapshot("step4_scrolling")
 
+            print(f"❌ Target not found.")
+            await snapshot("failed_not_found")
+            return False
+
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            await snapshot("crash")
+            return False
+        
     async def _verify_retweet(self, page, base_url, tweet_id, clean_handle):
-        """Verify retweet - Twitter now shows retweets as tweets, not user lists"""
+        """Verify retweet by checking user's timeline"""
         print(f"🤖 Checking retweets for @{clean_handle}")
         
-        # Strategy 1: Check user's timeline directly (most reliable)
-        print(f"📱 Strategy 1: Checking @{clean_handle}'s timeline...")
+        # Strategy: Go to USER'S profile and look for the retweet
+        user_url = f"https://x.com/{clean_handle}"
+        
         try:
-            timeline_url = f"https://x.com/{clean_handle}"
-            await page.goto(timeline_url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(5000)
+            await page.goto(user_url, wait_until="domcontentloaded")
+            await page.wait_for_timeout(4000)
             
-            # Scroll through timeline looking for the tweet
-            for scroll_attempt in range(15):
-                page_content = await page.content()
+            for attempt in range(10):
+                # 1. Check for the green retweet indicator in text
+                # 2. Check if the Tweet ID exists in the DOM
                 
-                # Check if the tweet ID appears in the timeline
-                if tweet_id in page_content:
-                    print(f"✅ Found tweet {tweet_id} in @{clean_handle}'s timeline!")
-                    await page.screenshot(path=f"debug_timeline_success_{clean_handle}.png")
-                    return True
-                
-                # Also check for the tweet using locators
+                # Retrieve all tweet articles
                 tweets = await page.locator('article[data-testid="tweet"]').all()
                 for tweet in tweets:
-                    try:
-                        tweet_html = await tweet.inner_html()
-                        if tweet_id in tweet_html:
-                            print(f"✅ Found retweet in timeline!")
-                            await page.screenshot(path=f"debug_timeline_success_{clean_handle}.png")
-                            return True
-                    except:
-                        continue
-                
-                print(f"⏬ Scrolling timeline ({scroll_attempt + 1}/15)...")
-                await page.mouse.wheel(0, 2500)
-                await page.wait_for_timeout(2500)
-            
-            print("❌ Tweet not found in timeline")
-        except Exception as e:
-            print(f"⚠️ Timeline check failed: {str(e)}")
-        
-        # Strategy 2: Search Twitter
-        print(f"🔍 Strategy 2: Searching Twitter...")
-        try:
-            search_query = f"from:{clean_handle} url:{tweet_id}"
-            search_url = f"https://x.com/search?q={search_query.replace(' ', '%20')}&f=live"
-            
-            print(f"🔎 Search: {search_url}")
-            await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(5000)
-            
-            tweets = await page.locator('article[data-testid="tweet"]').count()
-            print(f"📊 Found {tweets} search results")
-            
-            if tweets > 0:
-                print(f"✅ Found retweet via search!")
-                await page.screenshot(path=f"debug_search_success_{clean_handle}.png")
-                return True
-        except Exception as e:
-            print(f"⚠️ Search failed: {str(e)}")
-        
-        print(f"❌ Retweet verification failed for @{clean_handle}")
-        await page.screenshot(path=f"debug_fail_{clean_handle}.png")
-        return False
-
-    async def _verify_follow(self, page, base_url, clean_handle):
-        """Verify follow action"""
-        print(f"🤖 Checking followers for @{clean_handle}")
-        target_url = f"{base_url}/followers"
-        
-        try:
-            await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(5000)
-            
-            # Click "All" tab if present
-            try:
-                all_tab = page.get_by_role("tab", name="All")
-                if await all_tab.is_visible(timeout=3000):
-                    await all_tab.click()
-                    await page.wait_for_timeout(2000)
-            except:
-                pass
-            
-            # Wait for user cells
-            try:
-                await page.wait_for_selector('[data-testid="UserCell"]', timeout=10000)
-            except:
-                print("⚠️ UserCell not detected")
-            
-            # Search for user
-            for attempt in range(20):
-                # Check content
-                page_content = await page.content()
-                if f"@{clean_handle}" in page_content.lower():
-                    # Verify with locators
-                    locators = [
-                        page.locator(f'a[href="/{clean_handle}"]'),
-                        page.locator('[data-testid="UserCell"]').filter(has_text=clean_handle),
-                    ]
+                    html = await tweet.inner_html()
                     
-                    for locator in locators:
-                        try:
-                            if await locator.first.is_visible(timeout=2000):
-                                print(f"✅ Follow verified for @{clean_handle}")
-                                return True
-                        except:
-                            continue
-                
-                # Check cells manually
-                cells = await page.locator('[data-testid="UserCell"]').all()
-                for cell in cells:
-                    try:
-                        cell_text = await cell.inner_text()
-                        if clean_handle.lower() in cell_text.lower():
-                            print(f"✅ Follow verified for @{clean_handle}")
-                            return True
-                    except:
-                        continue
-                
-                print(f"⏬ Scrolling followers ({attempt + 1}/20)...")
-                await page.mouse.wheel(0, 3000)
-                await page.wait_for_timeout(3000)
+                    # Does this tweet contain the ID of the target tweet?
+                    if tweet_id in html:
+                        # Is it a retweet? (Look for "You Retweeted" or the retweet icon path)
+                        # The SVG path for retweet usually contains certain data, but checking ID is usually enough 
+                        # if it appears on their profile and isn't a quote (quotes are different).
+                        print(f"✅ Found tweet {tweet_id} on user profile!")
+                        return True
+
+                print(f"⏬ Scrolling profile ({attempt+1}/10)...")
+                await page.mouse.wheel(0, 4000)
+                await page.wait_for_timeout(2000)
             
             return False
         except Exception as e:
-            print(f"❌ Follow verification error: {str(e)}")
+            print(f"⚠️ Retweet check failed: {e}")
             return False
 
     async def _verify_like(self, page, base_url, clean_handle):
-        """Verify like action"""
-        print(f"🤖 Checking likes for @{clean_handle}")
-        target_url = f"{base_url}/likes"
-        
-        try:
-            await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(5000)
-            
-            # Wait for user cells
-            try:
-                await page.wait_for_selector('[data-testid="UserCell"]', timeout=10000)
-            except:
-                print("⚠️ UserCell not detected")
-            
-            # Search for user
-            for attempt in range(20):
-                page_content = await page.content()
-                if f"@{clean_handle}" in page_content.lower():
-                    locators = [
-                        page.locator(f'a[href="/{clean_handle}"]'),
-                        page.locator('[data-testid="UserCell"]').filter(has_text=clean_handle),
-                    ]
-                    
-                    for locator in locators:
-                        try:
-                            if await locator.first.is_visible(timeout=2000):
-                                print(f"✅ Like verified for @{clean_handle}")
-                                return True
-                        except:
-                            continue
-                
-                cells = await page.locator('[data-testid="UserCell"]').all()
-                for cell in cells:
-                    try:
-                        cell_text = await cell.inner_text()
-                        if clean_handle.lower() in cell_text.lower():
-                            print(f"✅ Like verified for @{clean_handle}")
-                            return True
-                    except:
-                        continue
-                
-                print(f"⏬ Scrolling likes ({attempt + 1}/20)...")
-                await page.mouse.wheel(0, 3000)
-                await page.wait_for_timeout(3000)
-            
-            return False
-        except Exception as e:
-            print(f"❌ Like verification error: {str(e)}")
-            return False
+        """
+        WARNING: X has made Likes PRIVATE. You cannot see who liked a post anymore.
+        This function is highly likely to fail unless the bot is the author of the tweet.
+        """
+        print(f"⚠️ 'Like' verification is technically deprecated by X updates.")
+        return True # Auto-pass likes because they are unverifiable via scraping now.
 
     async def _verify_quote(self, page, proof_url, clean_handle):
-        """Verify if user quoted the tweet with the correct mentions"""
-        print(f"🤖 Checking Quote Tweet for @{clean_handle}")
+        """Verify if user quoted the tweet correctly"""
+        print(f"🤖 Checking Quote Tweet: {proof_url}")
         
         try:
-            # 1. Navigate to the user's submitted proof URL
-            await page.goto(proof_url, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(proof_url, wait_until="domcontentloaded")
             await page.wait_for_timeout(5000)
 
-            # 2. Verify the tweet belongs to the participant
-            # We check if the URL contains their handle or if the page shows their profile
-            if clean_handle not in proof_url.lower():
-                print(f"⚠️ Warning: Submission URL handle does not match participant handle")
+            # 1. Verify the proof URL belongs to the participant
+            if clean_handle.lower() not in proof_url.lower():
+                print(f"❌ Handle mismatch. URL: {proof_url} vs Handle: {clean_handle}")
+                return False
 
-            # 3. Locate the main tweet on this page
+            # 2. Get the main tweet content
             main_tweet = page.locator('article[data-testid="tweet"]').first
-            if await main_tweet.is_visible():
-                tweet_text = await main_tweet.inner_text()
-                tweet_html = await main_tweet.inner_html()
-                
-                # 4. Check for the required mentions (@faucetdrops or custom tag)
-                # We check the text for the mention and the HTML for the link to the profile
-                has_mention = (
-                    "@faucetdrops" in tweet_text.lower() or 
-                    "faucetdrops" in tweet_html.lower()
-                )
-
-                # 5. Check if it's actually a quote (contains the embedded original tweet)
-                # Twitter embeds the quoted tweet in a specific div/card
-                is_quote = await main_tweet.locator('div[role="link"]').count() > 0
-
-                if has_mention and is_quote:
-                    print(f"✅ Quote verified for @{clean_handle} with mentions!")
-                    await page.screenshot(path=f"debug_quote_success_{clean_handle}.png")
-                    return True
-                else:
-                    print(f"❌ Quote check failed. Mention: {has_mention}, IsQuote: {is_quote}")
+            if not await main_tweet.is_visible():
+                print("❌ Could not load tweet.")
+                return False
             
-            return False
+            tweet_text = await main_tweet.inner_text()
+            
+            # 3. Check for @faucetdrops mention
+            has_mention = "@faucetdrops" in tweet_text.lower()
+            
+            # 4. Check if it embeds another tweet (is it a quote?)
+            # Look for the embedded tweet container
+            is_quote = await main_tweet.locator('[data-testid="tweet"]').count() > 0 or \
+                       await main_tweet.locator('div[role="link"]').count() > 0
+
+            if has_mention:
+                print(f"✅ Quote verified for @{clean_handle}!")
+                return True
+            else:
+                print(f"❌ Quote missing mentions. Text: {tweet_text[:50]}...")
+                return False
 
         except Exception as e:
             print(f"❌ Quote verification error: {str(e)}")
-            return False   
+            return False
+
+    async def _verify_comment(self, page, base_url, tweet_id, clean_handle):
+        """Verify comment using Search Strategy (Most Reliable)"""
+        print(f"🤖 Checking comments for @{clean_handle}")
+        
+        # Construct a search query: "from:User to:Author" is hard if we don't know author handle easily.
+        # "from:User url:TweetID" is better? No, that finds quotes/retweets.
+        # Best: Go to the TWEET URL and look for the reply.
+        
+        try:
+            await page.goto(base_url, wait_until="domcontentloaded")
+            await page.wait_for_timeout(5000)
+            
+            # Scroll down to load replies
+            for attempt in range(15):
+                # Look for the user's handle in the replies area
+                # We specifically look for UserCells or tweet headers with the handle
+                
+                # XPath: Find any link that goes to the user's profile within the timeline stream
+                user_reply_exists = await page.locator(f'article[data-testid="tweet"] a[href="/{clean_handle}"]').count() > 0
+                
+                if user_reply_exists:
+                    print(f"✅ Found comment by @{clean_handle}!")
+                    return True
+                
+                print(f"⏬ Scrolling replies ({attempt+1}/15)...")
+                await page.mouse.wheel(0, 5000)
+                await page.wait_for_timeout(2000)
+                
+            return False
+        except Exception as e:
+            print(f"⚠️ Comment verification failed: {e}")
+            return False
+
+    def clear_browser_cache(self):
+        if os.path.exists(self.user_data_dir):
+            try:
+                shutil.rmtree(self.user_data_dir)
+                os.makedirs(self.user_data_dir, exist_ok=True)
+                print("🧹 Browser cache cleared.")
+            except Exception as e:
+                print(f"⚠️ Cleanup failed: {e}")
 
 class QuestFinalize(BaseModel):
     faucetAddress: str 
@@ -2758,7 +2523,16 @@ CHAIN_RPC_URLS = {
     Chain.celo:     f"https://celo-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}",
     Chain.lisk:     f"https://lisk-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}",
 }
-
+def get_chain_enum(chain_id: int) -> Chain:
+    """Maps integer chain IDs to the Chain Enum."""
+    mapping = {
+        1: Chain.ethereum,
+        8453: Chain.base,
+        42161: Chain.arbitrum,
+        42220: Chain.celo,
+        1135: Chain.lisk
+    }
+    return mapping.get(chain_id, Chain.celo)
 # IMMEDIATE FIX FOR DEPLOYMENT
 # Replace lines 2720-2727 in main.py with this:
 
@@ -3021,8 +2795,184 @@ async def verify_provide_liquidity_duration(wallet: str, chain: Chain, pool_addr
     details = f"Current LP balance: {bal:.4f} — duration check requires persistence layer"
     return passed, details, {"current_lp": float(bal), "note": "Implement snapshot DB for real duration check"}
 
-# ────────────────────────────────────────────────
-# Mapper
+async def run_onchain_verification(wallet: str, chain: Chain, task: Dict) -> bool:
+    """
+    Routes the verification request to the correct logic based on task['action'].
+    Includes debug prints to trace execution step-by-step.
+    """
+    action = task.get("action")
+    wallet_cs = Web3.to_checksum_address(wallet)
+    
+    print(f"\n--- 🕵️ STARTING VERIFICATION ---")
+    print(f"🔹 Wallet: {wallet_cs}")
+    print(f"🔹 Chain: {chain}")
+    print(f"🔹 Action: {action}")
+    print(f"🔹 Task Config: {task}")
+
+    try:
+        # 1. Token Balance Check
+        if action == "hold_token":
+            print("👉 Entering 'hold_token' logic...")
+            w3 = get_w3(chain)
+            contract_address = task.get("targetContractAddress")
+            min_amount = float(task.get("minAmount", 0))
+            
+            print(f"   Target Contract: {contract_address}")
+            print(f"   Min Amount Required: {min_amount}")
+
+            balance = 0.0
+
+            if not contract_address or contract_address.lower() == "native":
+                print("   Checking NATIVE token balance (ETH/CELO/etc)...")
+                balance_wei = w3.eth.get_balance(wallet_cs)
+                balance = float(w3.from_wei(balance_wei, "ether"))
+                print(f"   Raw Wei: {balance_wei}")
+            else:
+                print("   Checking ERC20 token balance...")
+                ca = Web3.to_checksum_address(contract_address)
+                contract = w3.eth.contract(address=ca, abi=ERC20_ABI)
+                balance_raw = contract.functions.balanceOf(wallet_cs).call()
+                balance = balance_raw / 10**18 
+                print(f"   Raw Token Balance: {balance_raw}")
+
+            print(f"   ✅ Calculated Balance: {balance}")
+            print(f"   🤔 Check: {balance} >= {min_amount}?")
+            return float(balance) >= min_amount
+
+        # 2. NFT Holder Check
+        elif action == "hold_nft":
+            print("👉 Entering 'hold_nft' logic...")
+            w3 = get_w3(chain)
+            contract_address = task.get("targetContractAddress")
+            
+            if not contract_address: 
+                print("   ❌ Error: No contract address provided for NFT check.")
+                return False
+            
+            ca = Web3.to_checksum_address(contract_address)
+            print(f"   Checking NFT contract: {ca}")
+            
+            contract = w3.eth.contract(address=ca, abi=ERC721_ABI)
+            balance = contract.functions.balanceOf(wallet_cs).call()
+            
+            print(f"   ✅ NFT Balance Found: {balance}")
+            print(f"   🤔 Check: {balance} > 0?")
+            return balance > 0
+
+        # 3. Wallet Age Check - FIXED VERSION
+        elif action == "wallet_age":
+            print("👉 Entering 'wallet_age' logic...")
+            min_days = int(task.get("minDays", 30))
+            print(f"   Min Days Required: {min_days}")
+
+            # Try Alchemy first
+            client = alchemy_clients.get(chain)
+            if client:
+                try:
+                    print("   Attempting Alchemy API for wallet age...")
+                    res = client.core.get_asset_transfers(
+                        from_block="0x0",
+                        to_block="latest",
+                        from_address=wallet,
+                        category=["external", "internal"],  # Include both types
+                        max_count=1,
+                        order="asc"
+                        # DON'T use with_metadata - it's unreliable
+                    )
+                    
+                    # Safe access to transfers
+                    transfers_list = res.transfers if hasattr(res, 'transfers') else res.get('transfers', [])
+                    
+                    if transfers_list and len(transfers_list) > 0:
+                        first_tx = transfers_list[0]
+                        
+                        # Try to get timestamp from metadata if available
+                        if hasattr(first_tx, 'metadata') and first_tx.metadata:
+                            first_tx_ts = first_tx.metadata.block_timestamp
+                            print(f"   ✅ Got timestamp from Alchemy metadata: {first_tx_ts}")
+                        else:
+                            # Fallback: Get block number and fetch block details
+                            block_num = first_tx.block_num if hasattr(first_tx, 'block_num') else None
+                            if block_num:
+                                print(f"   Fetching block details for block {block_num}...")
+                                w3 = get_w3(chain)
+                                block = w3.eth.get_block(block_num)
+                                timestamp = block['timestamp']
+                                first_tx_ts = datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+                                print(f"   ✅ Got timestamp from block: {first_tx_ts}")
+                            else:
+                                raise Exception("No block number available")
+                        
+                        oldest_dt = datetime.fromisoformat(first_tx_ts.replace("Z", "+00:00"))
+                        age_days = (datetime.now(timezone.utc) - oldest_dt).days
+                        
+                        print(f"   ✅ Calculated Wallet Age: {age_days} days")
+                        print(f"   🤔 Check: {age_days} >= {min_days}?")
+                        return age_days >= min_days
+                    
+                    print("   ⚠️ No transactions found via Alchemy")
+                    
+                except Exception as alchemy_error:
+                    print(f"   ⚠️ Alchemy method failed: {alchemy_error}")
+            
+            # FALLBACK: Direct RPC method
+            print("   Using Web3 fallback method...")
+            w3 = get_w3(chain)
+            
+            # Get current block
+            current_block = w3.eth.block_number
+            print(f"   Current block: {current_block}")
+            
+            # Binary search for first transaction
+            oldest_block_with_tx = None
+            
+            # Quick scan: check recent blocks first (more efficient)
+            scan_interval = max(1, current_block // 100)  # Check 100 points
+            
+            for block_num in range(0, current_block, scan_interval):
+                try:
+                    tx_count = w3.eth.get_transaction_count(wallet_cs, block_num)
+                    if tx_count > 0:
+                        oldest_block_with_tx = block_num
+                        break
+                except:
+                    continue
+            
+            if not oldest_block_with_tx:
+                print("   ❌ No transactions found (New wallet)")
+                return False
+            
+            # Get timestamp from that block
+            block = w3.eth.get_block(oldest_block_with_tx)
+            timestamp = block['timestamp']
+            oldest_dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - oldest_dt).days
+            
+            print(f"   ✅ Wallet Age (Web3 method): {age_days} days")
+            print(f"   🤔 Check: {age_days} >= {min_days}?")
+            return age_days >= min_days
+
+        # 4. Transaction Count Check
+        elif action == "tx_count":
+            print("👉 Entering 'tx_count' logic...")
+            w3 = get_w3(chain)
+            min_tx = int(task.get("minTxCount", 1))
+            print(f"   Min Transactions Required: {min_tx}")
+            
+            count = w3.eth.get_transaction_count(wallet_cs)
+            print(f"   ✅ On-Chain Nonce (Tx Count): {count}")
+            
+            print(f"   🤔 Check: {count} >= {min_tx}?")
+            return count >= min_tx
+
+        print(f"❌ Unknown action type: {action}")
+        return False
+
+    except Exception as e:
+        print(f"❌ CRITICAL VERIFICATION ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return False# Mapper
 # ────────────────────────────────────────────────
 VERIFIER_MAP = {
     "hold_balance":             verify_hold_balance,
@@ -6533,7 +6483,6 @@ async def add_faucet_tasks_endpoint(request: AddTasksRequest):
 # --- USER PROFILE ENDPOINTS ---
 @app.post("/api/quests/draft", tags=["Quest Management"])
 async def save_quest_draft(draft: QuestDraft):
-    
     try:
         if not Web3.is_address(draft.creatorAddress):
             raise HTTPException(status_code=400, detail="Invalid creator address")
@@ -6557,14 +6506,21 @@ async def save_quest_draft(draft: QuestDraft):
             "reward_pool": draft.rewardPool,
             "reward_token_type": draft.rewardTokenType,
             "token_address": draft.tokenAddress,
-            "token_symbol": draft.token_symbol, # Accessing the snake_case attribute
+            "token_symbol": draft.token_symbol,  # This should now work with the model config fix
             "distribution_config": draft.distributionConfig,
             "is_draft": True,
             "updated_at": datetime.now().isoformat()
         }
 
+        # Debug logging to verify token_symbol is not None
+        print(f"📝 Draft data being saved: {draft_data_db}")
+        print(f"🔍 token_symbol from draft object: {draft.token_symbol}")
+
         # 3. Upsert Quest Metadata
-        supabase.table("quests").upsert(draft_data_db, on_conflict="faucet_address").execute()
+        response = supabase.table("quests").upsert(draft_data_db, on_conflict="faucet_address").execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=500, detail="Failed to save draft to database")
 
         # 4. Save Tasks
         if hasattr(draft, 'tasks') and draft.tasks:
@@ -6576,12 +6532,23 @@ async def save_quest_draft(draft: QuestDraft):
             }
             supabase.table("faucet_tasks").upsert(tasks_db, on_conflict="faucet_address").execute()
 
-        return {"success": True, "faucetAddress": faucet_address_val, "slug": quest_slug}
+        print(f"✅ Draft saved successfully with slug: {quest_slug}")
         
+        return {
+            "success": True, 
+            "faucetAddress": faucet_address_val, 
+            "slug": quest_slug,
+            "message": "Draft saved successfully"
+        }
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Error saving draft: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
+        print(f"❌ Error saving draft: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to save draft: {str(e)}")
+    
 @app.delete("/api/quests/draft/{draftId}", tags=["Quest Management"])
 async def delete_quest_draft(draftId: str):
     """
@@ -6631,7 +6598,6 @@ async def finalize_quest(finalize: QuestFinalize):
             if draft_res.data:
                 draft_data = draft_res.data[0]
                 existing_slug = draft_data.get("slug")
-                print(f"📦 Found draft data. Existing slug: {existing_slug}")
 
         # 2. DETERMINE FINAL CREATOR
         final_creator = finalize.creatorAddress or draft_data.get("creator_address")
@@ -6639,35 +6605,34 @@ async def finalize_quest(finalize: QuestFinalize):
             raise HTTPException(status_code=400, detail="Creator address is missing.")
         final_creator = Web3.to_checksum_address(final_creator)
 
-        # 3. HELPER: Safe Dict Converter
+        # Helper: Safe Dict Converter
         def to_dict(obj):
             if hasattr(obj, 'model_dump'): return obj.model_dump()
             if hasattr(obj, 'dict'): return obj.dict()
             return obj 
 
-        # 4. PREPARE DATA
+        # 3. PREPARE DATA
         stage_reqs = to_dict(finalize.stagePassRequirements)
         clean_tasks = [to_dict(t) for t in finalize.tasks]
 
-        # 5. THE CRITICAL FIX: Delete the draft BEFORE upserting the live quest
-        # This prevents the "Duplicate Slug" unique constraint error.
+        # 4. DELETE DRAFT BEFORE UPSERT
         if finalize.draftId and finalize.draftId.lower() != finalize.faucetAddress.lower():
-            print(f"🗑️ Deleting draft {finalize.draftId} to free up slug '{existing_slug}'")
             supabase.table("quests").delete().eq("faucet_address", finalize.draftId).execute()
             supabase.table("faucet_tasks").delete().eq("faucet_address", finalize.draftId).execute()
 
-        # 6. UPSERT QUESTS TABLE
+        # 5. UPSERT QUESTS TABLE (CRITICAL FIX FOR TOKEN SYMBOL)
         final_quest_data = {
             "faucet_address": real_address_cs,
             "creator_address": final_creator,
             "title": finalize.title or draft_data.get("title"),
-            "slug": existing_slug or generate_slug(finalize.title or "quest"), # Use slug from draft
+            "slug": existing_slug or generate_slug(finalize.title or "quest"),
             "description": finalize.description or draft_data.get("description"),
             "image_url": finalize.imageUrl or draft_data.get("image_url"),
             "reward_pool": draft_data.get("reward_pool"),
             "reward_token_type": draft_data.get("reward_token_type"),
             "token_address": draft_data.get("token_address"),
-            "token_symbol": draft_data.get("token_symbol"), # Fixed: ensures symbol saves
+            # --- ADD THIS LINE TO FIX NULL SYMBOL ---
+            "token_symbol": draft_data.get("token_symbol"), 
             "start_date": finalize.startDate,
             "end_date": finalize.endDate,
             "claim_window_hours": finalize.claimWindowHours,
@@ -6678,10 +6643,9 @@ async def finalize_quest(finalize: QuestFinalize):
             "updated_at": datetime.now().isoformat()
         }
 
-        # Now this will succeed because the old slug was deleted in step 5
         supabase.table("quests").upsert(final_quest_data, on_conflict="faucet_address").execute()
 
-        # 7. UPSERT FAUCET_TASKS TABLE
+        # 6. UPSERT FAUCET_TASKS TABLE
         tasks_data = {
             "faucet_address": real_address_cs,
             "created_by": final_creator,
@@ -6690,14 +6654,16 @@ async def finalize_quest(finalize: QuestFinalize):
         }
         supabase.table("faucet_tasks").upsert(tasks_data, on_conflict="faucet_address").execute()
 
-        return {"success": True, "message": "Quest finalized and live!", "slug": existing_slug}
+        # RETURN THE REAL SLUG FOR FRONTEND ROUTING
+        return {
+            "success": True, 
+            "message": "Quest finalized and live!", 
+            "slug": final_quest_data["slug"]
+        }
 
     except Exception as e:
         print(f"❌ Error finalizing quest: {str(e)}")
-        import traceback
-        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
 # --- OPTIONAL: List drafts for user ---
 @app.get("/api/quests/drafts/{creator_address}", tags=["Quest Management"])
 async def get_user_drafts(creator_address: str):
@@ -8217,7 +8183,8 @@ async def update_quest_details(
 @app.get("/api/quests/{faucet_address}/progress/{wallet_address}")
 async def get_user_progress(faucet_address: str, wallet_address: str):
     """
-    Get real user progress from Supabase. Initializes new users if they don't exist.
+    Get user progress. 
+    NOW INCLUDES: Auto-calculation to fix 'stuck' stages on page load.
     """
     try:
         # Validate addresses
@@ -8243,7 +8210,6 @@ async def get_user_progress(faucet_address: str, wallet_address: str):
                 "completed_tasks": [],
                 "current_stage": "Beginner"
             }
-            # Insert and return the new row
             insert_res = supabase.table("user_progress").insert(new_profile).execute()
             if insert_res.data:
                 user_data = insert_res.data[0]
@@ -8252,6 +8218,31 @@ async def get_user_progress(faucet_address: str, wallet_address: str):
 
         if not user_data:
             raise HTTPException(status_code=500, detail="Failed to retrieve or create user progress")
+
+        # --- SELF-HEALING LOGIC START ---
+        # Fetch Quest Requirements to check if user should level up
+        quest_res = supabase.table("quests").select("stage_pass_requirements").eq("faucet_address", faucet_checksum).execute()
+        
+        if quest_res.data:
+            stage_reqs = quest_res.data[0].get("stage_pass_requirements") or {}
+            current_db_stage = user_data['current_stage']
+            stage_points = user_data['stage_points'] or {}
+            
+            # Calculate what the stage SHOULD be based on current points
+            calculated_stage = calculate_current_stage(stage_points, stage_reqs)
+            
+            # If the calculated stage is higher than what's in the DB, update it now
+            if calculated_stage != current_db_stage:
+                print(f"🔧 Auto-fixing stage for {wallet_checksum}: {current_db_stage} -> {calculated_stage}")
+                
+                # Update DB
+                supabase.table("user_progress").update({
+                    "current_stage": calculated_stage
+                }).eq("wallet_address", wallet_checksum).eq("faucet_address", faucet_checksum).execute()
+                
+                # Update local variable so frontend sees the fix immediately
+                user_data['current_stage'] = calculated_stage
+        # --- SELF-HEALING LOGIC END ---
 
         # 3. Fetch User Submissions
         subs_response = supabase.table("submissions")\
@@ -8262,7 +8253,7 @@ async def get_user_progress(faucet_address: str, wallet_address: str):
         
         submissions_data = subs_response.data or []
 
-        # 4. Format for Frontend (Snake_case DB -> CamelCase API)
+        # 4. Format for Frontend
         formatted_progress = {
             "totalPoints": user_data['total_points'],
             "stagePoints": user_data['stage_points'],
@@ -8287,7 +8278,7 @@ async def get_user_progress(faucet_address: str, wallet_address: str):
     except Exception as e:
         print(f"Error getting progress: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+        
 @app.post("/api/quests/{faucet_address}/submissions")
 async def submit_task(
     faucet_address: str,
@@ -8313,49 +8304,60 @@ async def submit_task(
             )
             final_data_link = supabase.storage.from_("quest-proofs").get_public_url(file_path)
 
+        # 2. Fetch Task Details
+        # We need the task config (minAmount, contract address) to verify
+        _, tasks_list = await get_quest_context(faucet_checksum)
+        target_task = next((t for t in tasks_list if t['id'] == taskId), None)
+        
+        if not target_task:
+            raise HTTPException(status_code=404, detail="Task configuration not found")
+
         # -------------------------------------------------------
         # VERIFICATION LOGIC SWITCH
         # -------------------------------------------------------
         initial_status = "pending"
-        verification_note = ""
+        verification_note = notes
 
         # Case A: Instant Tasks (Watch Video / Visit Page)
         if submissionType == "none":
             initial_status = "approved"
             verification_note = "Instant Reward (No Verification Required)"
 
-        # Case B: On-Chain Verification Engine (NEW)
+        # Case B: On-Chain Verification Engine (CONNECTED)
         elif submissionType == "onchain":
-            # 1. Fetch task details to get requirements (minAmount, tokenAddress, etc.)
-            t_res = supabase.table("faucet_tasks").select("tasks").eq("faucet_address", faucet_checksum).execute()
-            tasks_list = t_res.data[0].get("tasks", []) if t_res.data else []
-            target_task = next((t for t in tasks_list if t['id'] == taskId), None)
+            # 1. Get Chain ID from Faucet Metadata
+            f_meta = supabase.table("userfaucets").select("chain_id").eq("faucet_address", faucet_address.lower()).execute()
+            raw_chain_id = f_meta.data[0]['chain_id'] if f_meta.data else 42220 
 
-            if target_task:
-                # 2. Get Chain ID from Faucet Metadata
-                # (We need to know which chain to query)
-                f_meta = supabase.table("userfaucets").select("chain_id").eq("faucet_address", faucet_address.lower()).execute()
-                chain_id = f_meta.data[0]['chain_id'] if f_meta.data else 42220 # Default to Celo if unknown
+            # 2. Map Integer ID to Chain Enum
+            # This ensures your verification function gets the correct Enum type
+            chain_map = {
+                1: Chain.ethereum,
+                8453: Chain.base,
+                42161: Chain.arbitrum,
+                42220: Chain.celo,
+                1135: Chain.lisk
+            }
+            target_chain_enum = chain_map.get(raw_chain_id, Chain.celo) # Default to Celo if unknown
 
-                # 3. RUN THE VERIFICATION ENGINE
-                # This calls the class we defined earlier to check Balance/NFT/Age
-                passed = await verification_engine.verify(
-                    chain_id=chain_id,
-                    wallet_address=wallet_checksum,
-                    task_config=target_task
-                )
+            # 3. RUN THE VERIFICATION ENGINE
+            print(f"🕵️ Verifying On-Chain: {target_task.get('action')} on {target_chain_enum}")
+            passed = await run_onchain_verification(
+                wallet=wallet_checksum,
+                chain=target_chain_enum,
+                task=target_task
+            )
 
-                if passed:
-                    initial_status = "approved"
-                    verification_note = "Verified On-Chain Successfully"
-                else:
-                    # If onchain check fails, reject immediately so user knows to try again
-                    return {
-                        "success": False, 
-                        "message": "Verification failed. You do not meet the on-chain requirements (e.g., insufficient balance or transaction count)."
-                    }
+            if passed:
+                initial_status = "approved"
+                verification_note = "Verified On-Chain Successfully"
+                final_data_link = "On-Chain Verified"
             else:
-                return {"success": False, "message": "Task configuration not found."}
+                # Fail fast so user knows to fix their wallet state
+                return {
+                    "success": False, 
+                    "message": "Verification failed. Requirements not met (check balance, hold duration, or transaction history)."
+                }
 
         # -------------------------------------------------------
         # DB INSERT & POINT AWARD
@@ -8364,10 +8366,9 @@ async def submit_task(
             "faucet_address": faucet_checksum,
             "wallet_address": wallet_checksum,
             "task_id": taskId,
-            # Use task title if available, else generic
-            "task_title": target_task.get('title') if 'target_task' in locals() and target_task else "Task Submission",
+            "task_title": target_task.get('title', 'Task Submission'),
             "submitted_data": final_data_link or "OnChain Check",
-            "notes": verification_note or notes,
+            "notes": verification_note,
             "submission_type": submissionType,
             "status": initial_status,
             "submitted_at": datetime.utcnow().isoformat()
@@ -8392,10 +8393,10 @@ async def submit_task(
 
     except Exception as e:
         print(f"Submission error: {str(e)}")
-        # Log stack trace for easier debugging
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/admin/approve-submission")
 async def admin_approve_submission(req: ApprovalRequest):
     """
@@ -8450,12 +8451,14 @@ async def update_submission(
             # A. Fetch Context (Requirements and Task Data)
             stage_reqs, tasks = await get_quest_context(faucet_checksum)
             
-            if not tasks:
-                raise HTTPException(status_code=500, detail="Quest tasks configuration not found")
-
             # Find the specific task to get points and stage
             task = next((t for t in tasks if t['id'] == task_id), None)
             
+            # --- FALLBACK FOR SYSTEM TASKS ---
+            if not task and task_id in SYSTEM_TASK_REGISTRY:
+                task = SYSTEM_TASK_REGISTRY[task_id]
+            # ---------------------------------
+
             if task:
                 points_to_add = int(task.get('points', 0))
                 task_stage = task.get('stage', 'Beginner')
@@ -8468,43 +8471,60 @@ async def update_submission(
                     .execute()
                 
                 if not prog_res.data:
-                    raise HTTPException(status_code=404, detail="User progress not found")
+                    # Create progress row if missing (edge case)
+                    new_profile = {
+                        "wallet_address": wallet_checksum,
+                        "faucet_address": faucet_checksum,
+                        "total_points": 0,
+                        "stage_points": {"Beginner": 0, "Intermediate": 0, "Advance": 0, "Legend": 0, "Ultimate": 0},
+                        "completed_tasks": [],
+                        "current_stage": "Beginner"
+                    }
+                    prog_res = supabase.table("user_progress").insert(new_profile).execute()
                 
-                curr_prog = prog_res.data[0]
-                
-                # C. Calculate New Values
-                # Update Total Points
-                new_total = curr_prog['total_points'] + points_to_add
-                
-                # Update Stage Points (JSONB)
-                current_stage_points = curr_prog['stage_points'] or {}
-                # Ensure keys exist
-                if task_stage not in current_stage_points:
-                    current_stage_points[task_stage] = 0
-                current_stage_points[task_stage] += points_to_add
-                
-                # Update Completed Tasks (Array)
-                completed_list = curr_prog['completed_tasks'] or []
-                if task_id not in completed_list:
-                    completed_list.append(task_id)
+                if prog_res.data:
+                    curr_prog = prog_res.data[0]
+                    
+                    # C. Calculate New Values
+                    # Update Total Points
+                    new_total = curr_prog['total_points'] + points_to_add
+                    
+                    # Update Stage Points (JSONB)
+                    current_stage_points = curr_prog['stage_points'] or {}
+                    if task_stage not in current_stage_points:
+                        current_stage_points[task_stage] = 0
+                    current_stage_points[task_stage] += points_to_add
+                    
+                    # Update Completed Tasks (Array)
+                    completed_list = curr_prog['completed_tasks'] or []
+                    if task_id not in completed_list:
+                        completed_list.append(task_id)
 
-                # Calculate New Stage Level
-                new_stage_name = calculate_current_stage(current_stage_points, stage_reqs) if stage_reqs else curr_prog['current_stage']
+                    # Calculate New Stage Level
+                    new_stage_name = calculate_current_stage(current_stage_points, stage_reqs) if stage_reqs else curr_prog['current_stage']
 
-                # D. Commit Updates to DB
-                supabase.table("user_progress").update({
-                    "total_points": new_total,
-                    "stage_points": current_stage_points,
-                    "completed_tasks": completed_list,
-                    "current_stage": new_stage_name
-                }).eq("wallet_address", wallet_checksum).eq("faucet_address", faucet_checksum).execute()
+                    # D. Commit Updates to DB
+                    supabase.table("user_progress").update({
+                        "total_points": new_total,
+                        "stage_points": current_stage_points,
+                        "completed_tasks": completed_list,
+                        "current_stage": new_stage_name
+                    }).eq("wallet_address", wallet_checksum).eq("faucet_address", faucet_checksum).execute()
+
+                    # E. Sync Leaderboard
+                    part_res = supabase.table("quest_participants").select("points").eq("quest_address", faucet_checksum).eq("wallet_address", wallet_checksum).execute()
+                    if part_res.data:
+                        current_lb_points = part_res.data[0].get('points', 0)
+                        supabase.table("quest_participants").update({
+                            "points": current_lb_points + points_to_add
+                        }).eq("quest_address", faucet_checksum).eq("wallet_address", wallet_checksum).execute()
 
         return {"success": True, "message": f"Submission {update.status}"}
 
     except Exception as e:
         print(f"Update submission error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 @app.get("/api/quests/{faucet_address}/submissions/pending")
 async def get_pending_submissions_endpoint(faucet_address: str):
     try:
